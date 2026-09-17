@@ -119,7 +119,9 @@ Wenn du unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journ
 
   const data = await res.json();
   const text = data.content[0].text;
-  return JSON.parse(text);
+  // Falls Claude die Antwort in ```json ... ``` einpackt, das entfernen
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(cleaned);
 }
 
 async function saveToSupabase(table, data) {
