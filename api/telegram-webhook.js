@@ -43,8 +43,19 @@ module.exports = async (req, res) => {
 
     return res.status(200).send("OK");
   } catch (err) {
-    // Fehler landen im Vercel-Log (Dashboard -> Logs), nicht als Absturz beim Nutzer
+    // Fehler landen im Vercel-Log (Dashboard -> Logs)
     console.error("Fehler im Webhook:", err);
+
+    // Zusätzlich versuchen, dir Bescheid zu geben (falls wir überhaupt schon eine chatId hatten)
+    try {
+      const chatId = req.body?.message?.chat?.id;
+      if (chatId) {
+        await sendTelegramMessage(chatId, `❌ Fehler beim Verarbeiten: ${err.message}`);
+      }
+    } catch (notifyErr) {
+      console.error("Konnte Fehler-Nachricht nicht senden:", notifyErr);
+    }
+
     return res.status(200).send("Fehler wurde geloggt");
   }
 };
@@ -126,7 +137,7 @@ Wenn du unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journ
 
 async function saveToSupabase(table, data) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/${table}`;
-  await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
@@ -136,6 +147,11 @@ async function saveToSupabase(table, data) {
     },
     body: JSON.stringify(data),
   });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`Supabase-Fehler (${res.status}): ${errorText}`);
+  }
 }
 
 async function sendTelegramMessage(chatId, text) {
