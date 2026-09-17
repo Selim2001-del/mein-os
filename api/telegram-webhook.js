@@ -1,8 +1,7 @@
 // Diese Funktion wird jedes Mal aufgerufen, wenn dein Telegram-Bot eine Nachricht bekommt.
-// Ablauf: Sprachnachricht -> Whisper (Text) -> Claude (Kategorie + Daten) -> Supabase (speichern) -> Bestätigung an dich
+// Ablauf: Sprachnachricht -> Whisper (Text) -> Claude (kann MEHRERE Einträge erkennen) -> Supabase (speichern) -> Bestätigung an dich
 
 module.exports = async (req, res) => {
-  // Telegram schickt nur POST-Anfragen. Alles andere ignorieren wir einfach.
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
@@ -17,7 +16,6 @@ module.exports = async (req, res) => {
 
     const chatId = message.chat.id;
 
-    // Falls es keine Sprachnachricht ist, kurz Bescheid geben und aufhören
     if (!message.voice) {
       await sendTelegramMessage(chatId, "Schick mir bitte eine Sprachnachricht 🎙️");
       return res.status(200).send("OK");
@@ -29,24 +27,28 @@ module.exports = async (req, res) => {
     // 2. Whisper: Sprache -> Text
     const transcript = await transcribeAudio(audioBuffer);
 
-    // 3. Claude: Text -> welche Tabelle + welche Daten
-    const classification = await classifyWithClaude(transcript);
+    // 3. Claude: Text -> Liste von Einträgen (auch wenn nur 1 erwähnt wird, kommt ein Array zurück)
+    const entries = await classifyWithClaude(transcript);
 
-    // 4. In Supabase speichern
-    await saveToSupabase(classification.table, classification.data);
+    // 4. Jeden einzelnen Eintrag in Supabase speichern, Erfolge/Fehler mitzählen
+    const results = [];
+    for (const entry of entries) {
+      try {
+        await saveToSupabase(entry.table, entry.data);
+        results.push(`✅ ${entry.table}`);
+      } catch (err) {
+        console.error(`Fehler beim Speichern in ${entry.table}:`, err);
+        results.push(`❌ ${entry.table} (${err.message})`);
+      }
+    }
 
-    // 5. Dir eine Bestätigung schicken
-    await sendTelegramMessage(
-      chatId,
-      `✅ Gespeichert in "${classification.table}":\n"${transcript}"`
-    );
+    // 5. Zusammenfassung an dich schicken
+    await sendTelegramMessage(chatId, `Verarbeitet (${entries.length} Einträge):\n${results.join("\n")}`);
 
     return res.status(200).send("OK");
   } catch (err) {
-    // Fehler landen im Vercel-Log (Dashboard -> Logs)
     console.error("Fehler im Webhook:", err);
 
-    // Zusätzlich versuchen, dir Bescheid zu geben (falls wir überhaupt schon eine chatId hatten)
     try {
       const chatId = req.body?.message?.chat?.id;
       if (chatId) {
@@ -94,7 +96,9 @@ async function transcribeAudio(audioBuffer) {
 }
 
 async function classifyWithClaude(transcript) {
-  const systemPrompt = `Du bekommst eine gesprochene Notiz einer Person. Entscheide, in welche Tabelle sie am besten passt und extrahiere die passenden Felder als JSON.
+  const systemPrompt = `Du bekommst eine gesprochene Notiz einer Person. Sie kann EINEN oder MEHRERE unabhängige Fakten enthalten (z.B. eine Aufgabe UND eine Ausgabe UND ein Workout in derselben Nachricht).
+
+Deine Aufgabe: Zerlege die Notiz in einzelne Einträge und entscheide für JEDEN, in welche Tabelle er gehört.
 
 Verfügbare Tabellen und Felder:
 - tasks: title, category, priority, due_date
@@ -108,10 +112,14 @@ Verfügbare Tabellen und Felder:
 - finance_snapshots: liquide_mittel, ruecklagen, vermoegen_gesamt
 - journal_entries: raw_text, summary, mood
 
-Antworte NUR mit validem JSON, ohne Erklärung, ohne Markdown-Codeblock, in diesem Format:
-{"table": "tabellenname", "data": { ...felder... }}
+Antworte NUR mit einem validen JSON-ARRAY, ohne Erklärung, ohne Markdown-Codeblock. Auch wenn die Notiz nur EINEN Fakt enthält, muss trotzdem ein Array mit einem Element zurückkommen. Format:
 
-Wenn du unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journal_entries" mit raw_text (Originaltext), einer kurzen summary und mood (z.B. "belastet", "neutral", "gut").`;
+[
+  {"table": "tabellenname", "data": { ...felder... }},
+  {"table": "tabellenname", "data": { ...felder... }}
+]
+
+Wenn du bei einem Teil unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journal_entries" mit raw_text (der Originaltext dieses Teils), einer kurzen summary und mood (z.B. "belastet", "neutral", "gut").`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -122,7 +130,7 @@ Wenn du unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journ
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 500,
+      max_tokens: 1500,
       system: systemPrompt,
       messages: [{ role: "user", content: transcript }],
     }),
@@ -130,9 +138,11 @@ Wenn du unsicher bist oder es eine freie Reflexion/ein Gedanke ist, nutze "journ
 
   const data = await res.json();
   const text = data.content[0].text;
-  // Falls Claude die Antwort in ```json ... ``` einpackt, das entfernen
   const cleaned = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(cleaned);
+  const parsed = JSON.parse(cleaned);
+
+  // Falls Claude doch nur ein einzelnes Objekt statt eines Arrays zurückgibt, absichern
+  return Array.isArray(parsed) ? parsed : [parsed];
 }
 
 async function saveToSupabase(table, data) {
