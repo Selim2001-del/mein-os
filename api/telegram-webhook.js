@@ -1,6 +1,4 @@
-// Ablauf: Sprachnachricht -> Whisper (Text) -> Claude entscheidet: LOGGEN oder FRAGE?
-// -> Loggen: in die richtige Tabelle einsortieren (inkl. Charaktereigenschaften, Trainingsplan)
-// -> Frage: relevante Daten aus Supabase holen, Claude lässt daraus eine Antwort formulieren
+// Ablauf: Sprachnachricht -> Whisper (Text) -> Claude entscheidet: LOGGEN, FRAGE, oder CHECK-IN-ABLAUF?
 
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
@@ -28,23 +26,33 @@ module.exports = async (req, res) => {
     // 2. Whisper: Sprache -> Text
     const transcript = await transcribeAudio(audioBuffer);
 
-    // 3. Claude: in einzelne Aktionen zerlegen (Logs, Fragen, Sonderaktionen)
-    const actions = await classifyWithClaude(transcript);
+    // 3. Läuft gerade ein interaktiver Check-in? Dann hat das Vorrang vor allem anderen.
+    const activeSession = await getCheckinSession(chatId);
+    if (activeSession) {
+      await handleCheckinAnswer(chatId, transcript, activeSession);
+      return res.status(200).send("OK");
+    }
 
+    // 4. Will die Person einen Check-in STARTEN?
+    const wantsCheckup = /check-?in|checkup|kpis? durchgehen|eigenschaften durchgehen|flaws durchgehen/i.test(transcript);
+    if (wantsCheckup) {
+      await startCheckinSession(chatId);
+      return res.status(200).send("OK");
+    }
+
+    // 5. Ansonsten: normale Klassifizierung (Loggen / Frage / Sonderaktionen)
+    const actions = await classifyWithClaude(transcript);
     const results = [];
 
     for (const action of actions) {
       try {
         if (action.type === "insert") {
-          // Normaler Eintrag in eine der einfachen Tabellen
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
         } else if (action.type === "trait_new") {
-          // Neue Charaktereigenschaft anlegen (nur falls noch nicht vorhanden)
           await ensureTraitExists(action.name, action.is_flaw);
           results.push(`✅ Neue Eigenschaft angelegt: "${action.name}"`);
         } else if (action.type === "trait_checkin") {
-          // Tägliche Bewertung einer Eigenschaft (legt sie an, falls sie noch nicht existiert)
           const traitId = await ensureTraitExists(action.trait_name, false);
           await saveToSupabase("personality_checkins", {
             trait_id: traitId,
@@ -53,13 +61,11 @@ module.exports = async (req, res) => {
           });
           results.push(`✅ Check-in "${action.trait_name}": Note ${action.note}`);
         } else if (action.type === "generate_plan") {
-          // Kompletten Trainingsplan neu erstellen lassen
           const planText = await generateTrainingPlan();
           await deactivateOldPlans();
           await saveToSupabase("training_plan", { plan_text: planText, active: true });
           results.push(`✅ Neuer Trainingsplan erstellt`);
         } else if (action.type === "question") {
-          // Frage beantworten: relevante Daten holen, Claude antworten lassen
           const answer = await answerQuestion(action.text, action.relevant_tables);
           await sendTelegramMessage(chatId, `💬 ${answer}`);
           results.push(`✅ Frage beantwortet: "${action.text}"`);
@@ -71,7 +77,6 @@ module.exports = async (req, res) => {
     }
 
     await sendTelegramMessage(chatId, results.join("\n"));
-
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Fehler im Webhook:", err);
@@ -122,7 +127,7 @@ async function sendTelegramMessage(chatId, text) {
   });
 }
 
-// ---------- Claude: Klassifizierung ----------
+// ---------- Claude Hilfsfunktionen ----------
 
 async function callClaude(system, userMessage, maxTokens = 1000, model = "claude-haiku-4-5-20251001") {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -168,7 +173,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - journal_entries: raw_text, summary, mood
    Format: {"type":"insert","table":"...","data":{...}}
 
-2. "trait_new" - die Person will eine NEUE Charaktereigenschaft/einen Flaw anlegen (z.B. "neue Eigenschaft: Prokrastination"):
+2. "trait_new" - die Person will eine NEUE Charaktereigenschaft/einen Flaw anlegen:
    Format: {"type":"trait_new","name":"...","is_flaw":true}
 
 3. "trait_checkin" - die Person bewertet eine Charaktereigenschaft mit einer Schulnote (1=sehr gut, 6=ungenügend):
@@ -177,9 +182,8 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen:
    Format: {"type":"generate_plan"}
 
-5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten (z.B. "wie viel hab ich für Lebensmittel ausgegeben", "wie war mein Trainingsfortschritt"):
+5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten:
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses"]}
-   Wähle bei relevant_tables die 1-3 Tabellen aus der Liste oben, die am ehesten die Antwort enthalten.
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -209,12 +213,10 @@ async function ensureTraitExists(name, isFlaw) {
     },
   });
   const existing = await res.json();
-
   if (existing && existing.length > 0) {
     return existing[0].id;
   }
 
-  // Noch nicht vorhanden -> neu anlegen
   const insertRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_traits`, {
     method: "POST",
     headers: {
@@ -230,9 +232,131 @@ async function ensureTraitExists(name, isFlaw) {
     const errorText = await insertRes.text();
     throw new Error(`Supabase-Fehler beim Anlegen der Eigenschaft (${insertRes.status}): ${errorText}`);
   }
-
   const inserted = await insertRes.json();
   return inserted[0].id;
+}
+
+// ---------- Interaktiver Check-in-Ablauf ----------
+
+async function getCheckinSession(chatId) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/personality_checkin_sessions?chat_id=eq.${chatId}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const rows = await res.json();
+  return rows && rows.length > 0 ? rows[0] : null;
+}
+
+async function saveCheckinSession(chatId, traitIds, currentIndex) {
+  // Alte Session löschen, falls vorhanden, dann neu anlegen (einfacher als ein echtes Upsert)
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_checkin_sessions?chat_id=eq.${chatId}`, {
+    method: "DELETE",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_checkin_sessions`, {
+    method: "POST",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({ chat_id: chatId, trait_ids: traitIds, current_index: currentIndex }),
+  });
+}
+
+async function deleteCheckinSession(chatId) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_checkin_sessions?chat_id=eq.${chatId}`, {
+    method: "DELETE",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+}
+
+async function getTraitById(id) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/personality_traits?id=eq.${id}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const rows = await res.json();
+  return rows[0];
+}
+
+function formatTraitQuestion(trait, position, total) {
+  let msg = `(${position}/${total}) ${trait.name}`;
+  if (trait.old_pattern) msg += `\nAltes Muster: ${trait.old_pattern}`;
+  if (trait.new_behavior) msg += `\nNeues Verhalten: ${trait.new_behavior}`;
+  msg += `\n\nWelche Note (1-6) für heute?`;
+  return msg;
+}
+
+async function startCheckinSession(chatId) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/personality_traits?active=eq.true&select=id`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const traits = await res.json();
+
+  if (!traits || traits.length === 0) {
+    await sendTelegramMessage(chatId, "Du hast noch keine Charaktereigenschaften angelegt. Sag mir erstmal welche, z.B. \"Neue Eigenschaft: Prokrastination, ist ein Flaw\".");
+    return;
+  }
+
+  const traitIds = traits.map((t) => t.id);
+  await saveCheckinSession(chatId, traitIds, 0);
+
+  const firstTrait = await getTraitById(traitIds[0]);
+  await sendTelegramMessage(chatId, `Los geht's, ${traits.length} Eigenschaften:\n\n${formatTraitQuestion(firstTrait, 1, traits.length)}`);
+}
+
+function parseGermanNumber(text) {
+  const digitMatch = text.match(/\b([1-6])\b/);
+  if (digitMatch) return parseInt(digitMatch[1], 10);
+
+  const words = { eins: 1, zwei: 2, drei: 3, vier: 4, fünf: 5, fuenf: 5, sechs: 6 };
+  const lower = text.toLowerCase();
+  for (const word in words) {
+    if (lower.includes(word)) return words[word];
+  }
+  return null;
+}
+
+async function handleCheckinAnswer(chatId, transcript, session) {
+  const note = parseGermanNumber(transcript);
+
+  if (note === null) {
+    await sendTelegramMessage(chatId, "Ich konnte keine Note (1-6) erkennen, sag's nochmal bitte 🙂");
+    return;
+  }
+
+  const currentTraitId = session.trait_ids[session.current_index];
+  await saveToSupabase("personality_checkins", { trait_id: currentTraitId, note });
+
+  const nextIndex = session.current_index + 1;
+
+  if (nextIndex >= session.trait_ids.length) {
+    await deleteCheckinSession(chatId);
+    await sendTelegramMessage(chatId, `✅ Alles erledigt! ${session.trait_ids.length} Eigenschaften bewertet. Guter Job heute.`);
+    return;
+  }
+
+  await saveCheckinSession(chatId, session.trait_ids, nextIndex);
+  const nextTrait = await getTraitById(session.trait_ids[nextIndex]);
+  await sendTelegramMessage(chatId, formatTraitQuestion(nextTrait, nextIndex + 1, session.trait_ids.length));
 }
 
 // ---------- Trainingsplan erstellen ----------
@@ -258,9 +382,9 @@ async function generateTrainingPlan() {
 Körperwerte-Verlauf: ${JSON.stringify(bodyMetrics)}
 Trainingsziele: ${JSON.stringify(goals)}`;
 
-  const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan (z.B. nach Wochentagen, mit Übungen, Sätzen, Wiederholungen). Falls noch keine Daten vorhanden sind, erstelle einen sinnvollen Einsteiger-Plan und weise darauf hin, dass er sich mit mehr Daten verbessern wird. Antworte NUR mit dem Plan als lesbarem Text, keine Erklärungen drumherum.`;
+  const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan. Falls noch keine Daten vorhanden sind, erstelle einen sinnvollen Einsteiger-Plan. Antworte NUR mit dem Plan als lesbarem Text.`;
 
-  return await callClaude(systemPrompt, context, 2000);
+  return await callClaude(systemPrompt, context, 2000, "claude-sonnet-5");
 }
 
 async function deactivateOldPlans() {
@@ -285,9 +409,9 @@ async function answerQuestion(question, relevantTables) {
     context += `\n\nDaten aus "${table}":\n${JSON.stringify(rows)}`;
   }
 
-  const systemPrompt = `Du bist ein persönlicher Assistent. Beantworte die Frage der Person basierend AUSSCHLIESSLICH auf den mitgelieferten Daten. Sei kurz und konkret (2-4 Sätze). Falls die Daten nicht ausreichen, um die Frage zu beantworten, sag das ehrlich.`;
+  const systemPrompt = `Du bist ein persönlicher Assistent. Beantworte die Frage der Person basierend AUSSCHLIESSLICH auf den mitgelieferten Daten. Sei kurz und konkret (2-4 Sätze). Falls die Daten nicht ausreichen, sag das ehrlich.`;
 
-  return await callClaude(systemPrompt, `Frage: ${question}${context}`, 500);
+  return await callClaude(systemPrompt, `Frage: ${question}${context}`, 500, "claude-sonnet-5");
 }
 
 // ---------- Supabase: Speichern ----------
