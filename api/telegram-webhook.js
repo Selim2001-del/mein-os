@@ -157,7 +157,16 @@ async function callClaude(system, userMessage, maxTokens = 1000, model = "claude
       messages: [{ role: "user", content: userMessage }],
     }),
   });
+
   const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(`Claude-API-Fehler (${res.status}): ${JSON.stringify(data)}`);
+  }
+  if (!data.content || !data.content[0] || !data.content[0].text) {
+    throw new Error(`Claude-Antwort hatte kein Text-Feld: ${JSON.stringify(data)}`);
+  }
+
   return data.content[0].text;
 }
 
