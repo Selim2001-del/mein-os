@@ -183,7 +183,13 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
-Wenn du unsicher bist oder es eine freie Reflexion ist, nutze "insert" mit table "journal_entries".`;
+Wenn du unsicher bist oder es eine freie Reflexion ist, nutze "insert" mit table "journal_entries".
+
+WICHTIG: Wenn die Person mehrere Eigenschaften mit "Note X" nennt (Schulnoten-Bewertung, z.B. "Verantwortung heute Note 3, Präsenz Note 2"), ist das IMMER "trait_checkin" pro genanntem Namen, NIEMALS journal_entries - auch wenn keine weitere Erklärung dabei ist. Ein Name + eine Zahl 1-6 nacheinander = ein Check-in.
+
+Beispiel:
+Eingabe: "Verantwortung heute Note 3, Rechtfertigen Note 5, Präsenz Note 2"
+Ausgabe: [{"type":"trait_checkin","trait_name":"Verantwortung","note":3,"notes":null},{"type":"trait_checkin","trait_name":"Rechtfertigen","note":5,"notes":null},{"type":"trait_checkin","trait_name":"Präsenz","note":2,"notes":null}]`;
 
   const text = await callClaude(systemPrompt, transcript, 1500);
   const parsed = parseJson(text);
