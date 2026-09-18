@@ -26,11 +26,24 @@ module.exports = async (req, res) => {
     // 2. Whisper: Sprache -> Text
     const transcript = await transcribeAudio(audioBuffer);
 
-    // 3. Läuft gerade ein interaktiver Check-in? Dann hat das Vorrang vor allem anderen.
+    // 3. Läuft gerade ein interaktiver Check-in? Nur eingreifen, wenn die Nachricht wirklich
+    //    danach aussieht (kurz + enthält eine Note) oder ein Abbruch gewünscht ist.
     const activeSession = await getCheckinSession(chatId);
     if (activeSession) {
-      await handleCheckinAnswer(chatId, transcript, activeSession);
-      return res.status(200).send("OK");
+      const wordCount = transcript.trim().split(/\s+/).length;
+      const wantsCancel = /abbrechen|stopp|stop|später|pause/i.test(transcript);
+
+      if (wantsCancel) {
+        await deleteCheckinSession(chatId);
+        await sendTelegramMessage(chatId, "Check-in abgebrochen, kein Problem. Sag einfach wieder \"Check-in\" wenn du weitermachen willst.");
+        return res.status(200).send("OK");
+      }
+
+      if (wordCount <= 6 && parseGermanNumber(transcript) !== null) {
+        await handleCheckinAnswer(chatId, transcript, activeSession);
+        return res.status(200).send("OK");
+      }
+      // Sonst: lange/komplexe Nachricht während einer offenen Session -> ignorieren und normal verarbeiten
     }
 
     // 4. Will die Person einen Check-in STARTEN?
