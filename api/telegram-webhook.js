@@ -124,7 +124,7 @@ async function sendTelegramMessage(chatId, text) {
 
 // ---------- Claude: Klassifizierung ----------
 
-async function callClaude(system, userMessage, maxTokens = 1000) {
+async function callClaude(system, userMessage, maxTokens = 1000, model = "claude-haiku-4-5-20251001") {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -133,7 +133,7 @@ async function callClaude(system, userMessage, maxTokens = 1000) {
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
+      model,
       max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: userMessage }],
@@ -191,9 +191,11 @@ Beispiel:
 Eingabe: "Verantwortung heute Note 3, Rechtfertigen Note 5, Präsenz Note 2"
 Ausgabe: [{"type":"trait_checkin","trait_name":"Verantwortung","note":3,"notes":null},{"type":"trait_checkin","trait_name":"Rechtfertigen","note":5,"notes":null},{"type":"trait_checkin","trait_name":"Präsenz","note":2,"notes":null}]`;
 
-  const text = await callClaude(systemPrompt, transcript, 1500);
+  const text = await callClaude(systemPrompt, transcript, 1500, "claude-sonnet-5");
   const parsed = parseJson(text);
-  return Array.isArray(parsed) ? parsed : [parsed];
+  const actions = Array.isArray(parsed) ? parsed : [parsed];
+  console.log("Klassifiziert als:", JSON.stringify(actions));
+  return actions;
 }
 
 // ---------- Charaktereigenschaften ----------
