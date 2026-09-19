@@ -74,7 +74,7 @@ module.exports = async (req, res) => {
           });
           results.push(`✅ Check-in "${action.trait_name}": Note ${action.note}`);
         } else if (action.type === "generate_plan") {
-          const planText = await generateTrainingPlan();
+          const planText = await generateTrainingPlan(action.constraints);
           await deactivateOldPlans();
           await saveToSupabase("training_plan", { plan_text: planText, active: true });
           results.push(`✅ Neuer Trainingsplan erstellt`);
@@ -207,8 +207,8 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 3. "trait_checkin" - die Person bewertet eine Charaktereigenschaft mit einer Schulnote (1=sehr gut, 6=ungenügend):
    Format: {"type":"trait_checkin","trait_name":"...","note":1-6,"notes":"optionaler Kontext"}
 
-4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen:
-   Format: {"type":"generate_plan"}
+4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen. Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
+   Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
 
 5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten:
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses"]}
@@ -401,16 +401,21 @@ async function fetchRecent(table, limit = 20) {
   return res.json();
 }
 
-async function generateTrainingPlan() {
+async function generateTrainingPlan(constraints) {
   const workouts = await fetchRecent("workouts", 20);
   const bodyMetrics = await fetchRecent("body_metrics", 5);
-  const goals = await fetchRecent("training_goals", 1);
+  const goals = await fetchRecent("training_goals", 5);
 
   const context = `Bisherige Workouts (neueste zuerst): ${JSON.stringify(workouts)}
 Körperwerte-Verlauf: ${JSON.stringify(bodyMetrics)}
-Trainingsziele: ${JSON.stringify(goals)}`;
+Trainingsziele: ${JSON.stringify(goals)}
+${constraints ? `Zusätzlicher Wunsch der Person: ${constraints}` : ""}`;
 
-  const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan. Falls noch keine Daten vorhanden sind, erstelle einen sinnvollen Einsteiger-Plan. Antworte NUR mit dem Plan als lesbarem Text.`;
+  const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan. Falls die Person einen zusätzlichen Wunsch genannt hat (z.B. Anzahl Trainingstage), halte dich exakt daran - auch wenn das vom Optimum abweicht, hat der Wunsch der Person Vorrang.
+
+WICHTIG zur Ernährungsempfehlung: Schau dir die Trainingsziele genau an. Wenn das Ziel eine Reduktion des Körperfettanteils ist (Zielwert niedriger als der aktuelle Wert), empfiehl NIEMALS einen Kalorienüberschuss - das würde dem Ziel widersprechen. Empfiehl stattdessen Erhaltungsbedarf oder ein leichtes Kaloriendefizit (Body Recomposition), kombiniert mit hoher Proteinzufuhr. Ein Überschuss ist nur sinnvoll, wenn der Ziel-KFA höher oder gleich dem aktuellen ist.
+
+Falls noch keine Daten vorhanden sind, erstelle einen sinnvollen Einsteiger-Plan. Antworte NUR mit dem Plan als lesbarem Text.`;
 
   return await callClaude(systemPrompt, context, 4000, "claude-sonnet-5");
 }
