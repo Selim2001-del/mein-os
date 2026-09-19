@@ -110,6 +110,9 @@ module.exports = async (req, res) => {
           const answer = await answerQuestion(action.text, action.relevant_tables);
           await sendTelegramMessage(chatId, `💬 ${answer}`);
           results.push(`✅ Frage beantwortet: "${action.text}"`);
+        } else if (action.type === "delete") {
+          const deleteResult = await handleDelete(action.table, action.match_text);
+          results.push(`🗑️ ${deleteResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -247,6 +250,10 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten (z.B. "wie viel hab ich für Lebensmittel ausgegeben", "was ist mein Trainingsplan für heute, ich mache Tag 1", "wie liefen meine Charaktereigenschaften diese Woche"):
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses"]}
    Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung.
+
+6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
+   Format: {"type":"delete","table":"tabellenname","match_text":"charakteristischer Text zum Finden des Eintrags"}
+   Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -465,6 +472,57 @@ async function upsertDebt(data) {
   }
 }
 
+// ---------- Löschen per Sprache/Text ----------
+
+async function handleDelete(table, matchText) {
+  const columnMap = {
+    tasks: "title",
+    expenses: "description",
+    fixed_costs: "name",
+    debts: "name",
+    finance_goals: "title",
+    journal_entries: "raw_text",
+    workouts: "exercise",
+    nutrition_log: "description",
+    income: "source",
+    personality_traits: "name",
+  };
+
+  const column = columnMap[table];
+  if (!column) {
+    return `Löschen aus "${table}" wird nicht unterstützt.`;
+  }
+
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?${column}=ilike.*${encodeURIComponent(matchText)}*`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler bei der Suche (${res.status}): ${await res.text()}`);
+  const matches = await res.json();
+
+  if (!matches || matches.length === 0) {
+    return `Nichts gefunden zu "${matchText}" in "${table}".`;
+  }
+  if (matches.length > 1) {
+    return `${matches.length} Einträge zu "${matchText}" in "${table}" gefunden - bitte genauer beschreiben, damit nichts Falsches gelöscht wird.`;
+  }
+
+  const row = matches[0];
+  const deleteRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}?id=eq.${row.id}`, {
+    method: "DELETE",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!deleteRes.ok) throw new Error(`Supabase-Fehler beim Löschen (${deleteRes.status}): ${await deleteRes.text()}`);
+
+  return `Gelöscht aus "${table}": "${row[column]}"`;
+}
+
 // ---------- Chat-ID merken (für proaktive Nachrichten) ----------
 
 async function rememberChatId(chatId) {
@@ -496,16 +554,68 @@ async function handlePhotoMessage(chatId, message) {
     await uploadToSupabaseStorage(fileName, imageBuffer);
     const signedUrl = await getSignedPhotoUrl(fileName);
 
+    // KI-Schätzung des Körperfettanteils aus dem Foto (grobe visuelle Einschätzung)
+    let bodyFatEstimate = null;
+    let estimateNote = null;
+    try {
+      const estimate = await estimateBodyFatFromPhoto(imageBuffer);
+      bodyFatEstimate = estimate.body_fat_percent || null;
+      estimateNote = estimate.note || null;
+    } catch (visionErr) {
+      console.error("Körperfett-Schätzung fehlgeschlagen:", visionErr);
+    }
+
     await saveToSupabase("body_metrics", {
       photo_url: signedUrl,
-      photo_note: message.caption || null,
+      photo_note: message.caption || estimateNote,
+      body_fat_percent: bodyFatEstimate,
     });
 
-    await sendTelegramMessage(chatId, "✅ Fortschrittsfoto gespeichert.");
+    const estimateText = bodyFatEstimate
+      ? `\n📊 Geschätzter Körperfettanteil: ~${bodyFatEstimate}% (grobe visuelle Schätzung, keine Messung)${estimateNote ? `\n${estimateNote}` : ""}`
+      : "";
+    await sendTelegramMessage(chatId, `✅ Fortschrittsfoto gespeichert.${estimateText}`);
   } catch (err) {
     console.error("Fehler beim Foto-Upload:", err);
     await sendTelegramMessage(chatId, `❌ Fehler beim Foto-Upload: ${err.message}`);
   }
+}
+
+async function estimateBodyFatFromPhoto(imageBuffer) {
+  const base64Image = imageBuffer.toString("base64");
+
+  const systemPrompt = `Du bist ein erfahrener Fitness-Coach. Schätze anhand des Fotos den ungefähren Körperfettanteil der abgebildeten Person. Das ist nur eine grobe visuelle Einschätzung, keine exakte Messung - sei ehrlich in deiner Unsicherheit. Antworte NUR mit validem JSON, ohne Markdown: {"body_fat_percent": Zahl, "note": "ein kurzer Kommentar, z.B. sichtbare Veränderung zum letzten Foto falls erkennbar"}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": process.env.ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-5",
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Image } },
+            { type: "text", text: "Schätze den Körperfettanteil auf diesem Foto." },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Claude Vision Fehler (${res.status}): ${JSON.stringify(data)}`);
+
+  const textBlock = data.content && data.content.find((b) => b.type === "text");
+  if (!textBlock) throw new Error("Keine Text-Antwort von Claude Vision erhalten");
+
+  return parseJson(textBlock.text);
 }
 
 async function uploadToSupabaseStorage(fileName, buffer) {
