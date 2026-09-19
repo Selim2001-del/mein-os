@@ -62,6 +62,11 @@ module.exports = async (req, res) => {
         if (action.type === "insert") {
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
+
+          if (action.table === "workouts" && action.data.exercise) {
+            const feedback = await checkProgressionFeedback(action.data.exercise);
+            if (feedback) results.push(`💪 ${feedback}`);
+          }
         } else if (action.type === "trait_new") {
           await ensureTraitExists(action.name, action.is_flaw);
           results.push(`✅ Neue Eigenschaft angelegt: "${action.name}"`);
@@ -210,8 +215,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen. Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
    Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
 
-5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten:
+5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten (z.B. "wie viel hab ich für Lebensmittel ausgegeben", "was ist mein Trainingsplan für heute, ich mache Tag 1", "wie liefen meine Charaktereigenschaften diese Woche"):
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses"]}
+   Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung.
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -387,10 +393,44 @@ async function handleCheckinAnswer(chatId, transcript, session) {
   await sendTelegramMessage(chatId, formatTraitQuestion(nextTrait, nextIndex + 1, session.trait_ids.length));
 }
 
+// ---------- Progressions-Feedback ----------
+
+async function checkProgressionFeedback(exerciseName) {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/workouts?exercise=ilike.${encodeURIComponent(exerciseName)}&order=logged_at.desc&limit=6`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const history = await res.json();
+
+    if (!history || history.length < 2) return null; // zu wenig Historie für eine Einschätzung
+
+    const activePlan = await fetchRecent("training_plan", 1, "&active=eq.true");
+    const planText = activePlan[0]?.plan_text || "kein Plan hinterlegt";
+
+    const systemPrompt = `Du bist ein Personal Trainer. Du bekommst den Verlauf einer einzelnen Übung (neueste zuerst) und den aktuellen Trainingsplan. Beurteile in EINEM kurzen Satz, ob die Person das obere Ende ihres Wiederholungsbereichs mehrfach in Folge erreicht/übertroffen hat.
+
+WICHTIG: Schlag eine Gewichts-/Wiederholungssteigerung NIE einfach so vor. Frag stattdessen zuerst nach der Ausführung, z.B.: "Du bist jetzt 3x am oberen Ende - war die Ausführung dabei sauber/kontrolliert? Falls ja, kannst du beim nächsten Mal das Gewicht leicht steigern." Sauberere Technik hat Vorrang vor mehr Gewicht.
+
+Wenn kein Anlass für eine Steigerung besteht, antworte NUR mit "weiter so wie bisher". Antworte NUR mit diesem einen Satz/dieser einen Frage, keine Einleitung.`;
+
+    const userMsg = `Übung: ${exerciseName}\nVerlauf: ${JSON.stringify(history)}\nTrainingsplan: ${planText}`;
+
+    return await callClaude(systemPrompt, userMsg, 200, "claude-haiku-4-5-20251001");
+  } catch (err) {
+    console.error("Fehler beim Progressions-Feedback:", err);
+    return null; // Feedback ist ein Bonus, darf das Loggen nicht blockieren
+  }
+}
+
 // ---------- Trainingsplan erstellen ----------
 
-async function fetchRecent(table, limit = 20) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?limit=${limit}`;
+async function fetchRecent(table, limit = 20, extraFilter = "") {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?limit=${limit}${extraFilter}`;
   const res = await fetch(url, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
@@ -438,7 +478,8 @@ async function deactivateOldPlans() {
 async function answerQuestion(question, relevantTables) {
   let context = "";
   for (const table of relevantTables) {
-    const rows = await fetchRecent(table, 50);
+    const filter = table === "training_plan" ? "&active=eq.true" : "";
+    const rows = await fetchRecent(table, 50, filter);
     context += `\n\nDaten aus "${table}":\n${JSON.stringify(rows)}`;
   }
 
