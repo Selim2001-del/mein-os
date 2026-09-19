@@ -22,16 +22,19 @@ module.exports = async (req, res) => {
       return res.status(200).send("OK");
     }
 
-    if (!message.voice) {
-      await sendTelegramMessage(chatId, "Schick mir bitte eine Sprachnachricht 🎙️");
+    if (!message.voice && !message.text) {
+      await sendTelegramMessage(chatId, "Schick mir eine Sprachnachricht oder schreib mir einfach 🎙️💬");
       return res.status(200).send("OK");
     }
 
-    // 1. Sprachdatei von Telegram herunterladen
-    const audioBuffer = await downloadTelegramFile(message.voice.file_id);
-
-    // 2. Whisper: Sprache -> Text
-    const transcript = await transcribeAudio(audioBuffer);
+    // Sprachnachricht -> herunterladen + transkribieren. Getippter Text -> direkt übernehmen.
+    let transcript;
+    if (message.voice) {
+      const audioBuffer = await downloadTelegramFile(message.voice.file_id);
+      transcript = await transcribeAudio(audioBuffer);
+    } else {
+      transcript = message.text;
+    }
 
     // 3. Läuft gerade ein interaktiver Check-in? Nur eingreifen, wenn die Nachricht wirklich
     //    danach aussieht (kurz + enthält eine Note) oder ein Abbruch gewünscht ist.
