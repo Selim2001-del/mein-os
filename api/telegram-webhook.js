@@ -64,6 +64,11 @@ module.exports = async (req, res) => {
           if (action.table === "nutrition_log") {
             await refineNutritionWithSearch(action.data);
           }
+          if (action.table === "debts") {
+            await upsertDebt(action.data);
+            results.push(`✅ Gespeichert in "debts"`);
+            continue;
+          }
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
 
@@ -218,6 +223,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - income: amount, source, description
    - fixed_costs: name, betrag, rhythmus, kategorie
    - debts: name, restbetrag, monatliche_rate, zinssatz
+     Hinweis: Bei debts reicht der AKTUELLE Rest-Betrag - der Bot merkt sich beim ersten Mal automatisch den Ausgangspunkt und trackt danach den Fortschritt.
    - finance_goals: title, target_amount, target_date
    - finance_snapshots: liquide_mittel, ruecklagen, vermoegen_gesamt
    - journal_entries: raw_text, summary, mood
@@ -414,6 +420,43 @@ async function handleCheckinAnswer(chatId, transcript, session) {
   await saveCheckinSession(chatId, session.trait_ids, nextIndex);
   const nextTrait = await getTraitById(session.trait_ids[nextIndex]);
   await sendTelegramMessage(chatId, formatTraitQuestion(nextTrait, nextIndex + 1, session.trait_ids.length));
+}
+
+// ---------- Schulden: Upsert per Name (Fortschritt trackbar) ----------
+
+async function upsertDebt(data) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/debts?name=ilike.${encodeURIComponent(data.name)}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const existing = await res.json();
+
+  if (existing && existing.length > 0) {
+    // Schon vorhanden -> nur Rest-Betrag/Rate/Zins aktualisieren, Ausgangspunkt bleibt unangetastet
+    const patchRes = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/debts?id=eq.${existing[0].id}`,
+      {
+        method: "PATCH",
+        headers: {
+          apikey: process.env.SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          restbetrag: data.restbetrag,
+          monatliche_rate: data.monatliche_rate ?? existing[0].monatliche_rate,
+          zinssatz: data.zinssatz ?? existing[0].zinssatz,
+        }),
+      }
+    );
+    if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren der Schuld (${patchRes.status}): ${await patchRes.text()}`);
+  } else {
+    // Neu -> Ausgangspunkt automatisch auf den aktuellen Rest-Betrag setzen
+    await saveToSupabase("debts", { ...data, original_betrag: data.restbetrag });
+  }
 }
 
 // ---------- Chat-ID merken (für proaktive Nachrichten) ----------
