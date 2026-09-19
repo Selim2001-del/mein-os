@@ -16,13 +16,19 @@ module.exports = async (req, res) => {
     const chatId = message.chat.id;
     await rememberChatId(chatId);
 
+    // Fortschrittsfoto? Separat behandeln, keine Sprachverarbeitung nötig.
+    if (message.photo) {
+      await handlePhotoMessage(chatId, message);
+      return res.status(200).send("OK");
+    }
+
     if (!message.voice) {
       await sendTelegramMessage(chatId, "Schick mir bitte eine Sprachnachricht 🎙️");
       return res.status(200).send("OK");
     }
 
     // 1. Sprachdatei von Telegram herunterladen
-    const audioBuffer = await downloadTelegramVoice(message.voice.file_id);
+    const audioBuffer = await downloadTelegramFile(message.voice.file_id);
 
     // 2. Whisper: Sprache -> Text
     const transcript = await transcribeAudio(audioBuffer);
@@ -129,7 +135,7 @@ module.exports = async (req, res) => {
 
 // ---------- Telegram / Whisper Hilfsfunktionen ----------
 
-async function downloadTelegramVoice(fileId) {
+async function downloadTelegramFile(fileId) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const fileInfoRes = await fetch(`https://api.telegram.org/bot${token}/getFile?file_id=${fileId}`);
   const fileInfo = await fileInfoRes.json();
@@ -476,6 +482,62 @@ async function rememberChatId(chatId) {
   } catch (err) {
     console.error("Konnte Chat-ID nicht speichern:", err);
   }
+}
+
+// ---------- Fortschrittsfotos ----------
+
+async function handlePhotoMessage(chatId, message) {
+  try {
+    const photos = message.photo; // Telegram schickt mehrere Größen, die letzte ist die größte
+    const fileId = photos[photos.length - 1].file_id;
+    const imageBuffer = await downloadTelegramFile(fileId);
+
+    const fileName = `progress_${Date.now()}.jpg`;
+    await uploadToSupabaseStorage(fileName, imageBuffer);
+    const signedUrl = await getSignedPhotoUrl(fileName);
+
+    await saveToSupabase("body_metrics", {
+      photo_url: signedUrl,
+      photo_note: message.caption || null,
+    });
+
+    await sendTelegramMessage(chatId, "✅ Fortschrittsfoto gespeichert.");
+  } catch (err) {
+    console.error("Fehler beim Foto-Upload:", err);
+    await sendTelegramMessage(chatId, `❌ Fehler beim Foto-Upload: ${err.message}`);
+  }
+}
+
+async function uploadToSupabaseStorage(fileName, buffer) {
+  const url = `${process.env.SUPABASE_URL}/storage/v1/object/progress-photos/${fileName}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "image/jpeg",
+    },
+    body: buffer,
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase Storage Upload-Fehler (${res.status}): ${await res.text()}`);
+  }
+}
+
+async function getSignedPhotoUrl(fileName) {
+  const url = `${process.env.SUPABASE_URL}/storage/v1/object/sign/progress-photos/${fileName}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ expiresIn: 315360000 }), // ~10 Jahre gültig
+  });
+  if (!res.ok) {
+    throw new Error(`Supabase Storage Sign-Fehler (${res.status}): ${await res.text()}`);
+  }
+  const data = await res.json();
+  return `${process.env.SUPABASE_URL}/storage/v1${data.signedURL}`;
 }
 
 // ---------- Nährwert-Recherche für Markenprodukte ----------
