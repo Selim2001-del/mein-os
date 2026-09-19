@@ -111,7 +111,7 @@ module.exports = async (req, res) => {
           await sendTelegramMessage(chatId, `💬 ${answer}`);
           results.push(`✅ Frage beantwortet: "${action.text}"`);
         } else if (action.type === "delete") {
-          const deleteResult = await handleDelete(action.table, action.match_text);
+          const deleteResult = await handleDelete(action.table, action.description);
           results.push(`🗑️ ${deleteResult}`);
         }
       } catch (err) {
@@ -252,8 +252,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung.
 
 6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
-   Format: {"type":"delete","table":"tabellenname","match_text":"charakteristischer Text zum Finden des Eintrags"}
-   WICHTIG: match_text darf NUR die charakteristischen Inhaltswörter des Eintrags selbst enthalten (z.B. "Steuerzahlung", "Testeintrag"), NIEMALS Wörter wie "löschen", "entfernen", "die Aufgabe" - das sind Befehlswörter, keine Suchbegriffe.
+   Format: {"type":"delete","table":"tabellenname","description":"was gelöscht werden soll, in normalen Worten"}
    Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
@@ -475,7 +474,7 @@ async function upsertDebt(data) {
 
 // ---------- Löschen per Sprache/Text ----------
 
-async function handleDelete(table, matchText) {
+async function handleDelete(table, description) {
   const columnMap = {
     tasks: "title",
     expenses: "description",
@@ -494,29 +493,36 @@ async function handleDelete(table, matchText) {
     return `Löschen aus "${table}" wird nicht unterstützt.`;
   }
 
-  // Wortweise suchen statt exaktem Teilstring - "Testeintrag" findet auch "Testeintrag zum Löschen"
-  const words = matchText.trim().split(/\s+/).filter(Boolean);
-  const pattern = `*${words.join("*")}*`;
-
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?${column}=ilike.${encodeURIComponent(pattern)}`;
+  // Alle (bzw. die letzten 100) Einträge holen, damit Claude selbst den passenden erkennen kann
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?select=id,${column}&limit=100`;
   const res = await fetch(url, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
     },
   });
-  if (!res.ok) throw new Error(`Supabase-Fehler bei der Suche (${res.status}): ${await res.text()}`);
-  const matches = await res.json();
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
 
-  if (!matches || matches.length === 0) {
-    return `Nichts gefunden zu "${matchText}" in "${table}".`;
-  }
-  if (matches.length > 1) {
-    return `${matches.length} Einträge zu "${matchText}" in "${table}" gefunden - bitte genauer beschreiben, damit nichts Falsches gelöscht wird.`;
+  if (!rows || rows.length === 0) {
+    return `Keine Einträge in "${table}" vorhanden.`;
   }
 
-  const row = matches[0];
-  const deleteRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}?id=eq.${row.id}`, {
+  const matchPrompt = `Hier ist eine Liste von Einträgen (id + Text) aus der Tabelle "${table}":
+${JSON.stringify(rows)}
+
+Die Person möchte einen Eintrag löschen, beschrieben als: "${description}"
+
+Finde den EINEN am besten passenden Eintrag (auch bei ungenauer/anderer Formulierung, z.B. "Testeintrag" passt zu "Test Eintrag löschen"). Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_text": "der Text des gefundenen Eintrags oder null", "reason": "kurze Begründung, v.a. falls nichts eindeutig passt oder mehrere gleich gut passen"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.id) {
+    return `Nichts eindeutig gefunden zu "${description}" in "${table}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  const deleteRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/${table}?id=eq.${match.id}`, {
     method: "DELETE",
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
@@ -525,7 +531,7 @@ async function handleDelete(table, matchText) {
   });
   if (!deleteRes.ok) throw new Error(`Supabase-Fehler beim Löschen (${deleteRes.status}): ${await deleteRes.text()}`);
 
-  return `Gelöscht aus "${table}": "${row[column]}"`;
+  return `Gelöscht aus "${table}": "${match.matched_text}"`;
 }
 
 // ---------- Chat-ID merken (für proaktive Nachrichten) ----------
