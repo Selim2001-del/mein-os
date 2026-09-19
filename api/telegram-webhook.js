@@ -70,9 +70,6 @@ module.exports = async (req, res) => {
     for (const action of actions) {
       try {
         if (action.type === "insert") {
-          if (action.table === "nutrition_log") {
-            await refineNutritionWithSearch(action.data);
-          }
           if (action.table === "debts") {
             await upsertDebt(action.data);
             results.push(`✅ Gespeichert in "debts"`);
@@ -763,12 +760,20 @@ async function generateTrainingPlan(constraints) {
   const bodyMetrics = await fetchRecent("body_metrics", 5);
   const goals = await fetchRecent("training_goals", 5);
 
-  const context = `Bisherige Workouts (neueste zuerst): ${JSON.stringify(workouts)}
+  // Equipment steckt als Freitext in einer der Zielnotizen - explizit rausziehen und prominent platzieren
+  const equipmentNote = goals.find((g) => g.notes && /equipment/i.test(g.notes));
+  const equipmentText = equipmentNote ? equipmentNote.notes : "Kein Equipment hinterlegt - bitte nachfragen/allgemein halten.";
+
+  const context = `VERFÜGBARES EQUIPMENT (STRIKT EINHALTEN): ${equipmentText}
+
+Bisherige Workouts (neueste zuerst): ${JSON.stringify(workouts)}
 Körperwerte-Verlauf: ${JSON.stringify(bodyMetrics)}
 Trainingsziele: ${JSON.stringify(goals)}
 ${constraints ? `Zusätzlicher Wunsch der Person: ${constraints}` : ""}`;
 
   const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan. Falls die Person einen zusätzlichen Wunsch genannt hat (z.B. Anzahl Trainingstage), halte dich exakt daran - auch wenn das vom Optimum abweicht, hat der Wunsch der Person Vorrang.
+
+ABSOLUT KRITISCH - Equipment-Regel: Die Person hat NUR das oben unter "VERFÜGBARES EQUIPMENT" genannte Zubehör. Bevor du IRGENDEINE Übung in den Plan aufnimmst, prüfe explizit: "Kann das mit genau diesem Equipment ausgeführt werden?" Falls nicht, wähle eine machbare Alternative für dieselbe Muskelgruppe. Nenne NIEMALS Übungen, die Kabelzug, Latzug-Maschine, Langhantel, Beinpresse oder ähnliches erfordern, außer diese Geräte wurden explizit genannt. Geh JEDE Übung im fertigen Plan nochmal einzeln durch, bevor du antwortest, und ersetze alles, was nicht passt.
 
 WICHTIG zur Ernährungsempfehlung: Schau dir die Trainingsziele genau an. Wenn das Ziel eine Reduktion des Körperfettanteils ist (Zielwert niedriger als der aktuelle Wert), empfiehl NIEMALS einen Kalorienüberschuss - das würde dem Ziel widersprechen. Empfiehl stattdessen Erhaltungsbedarf oder ein leichtes Kaloriendefizit (Body Recomposition), kombiniert mit hoher Proteinzufuhr. Ein Überschuss ist nur sinnvoll, wenn der Ziel-KFA höher oder gleich dem aktuellen ist.
 
