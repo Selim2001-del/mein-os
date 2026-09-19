@@ -14,6 +14,7 @@ module.exports = async (req, res) => {
     }
 
     const chatId = message.chat.id;
+    await rememberChatId(chatId);
 
     if (!message.voice) {
       await sendTelegramMessage(chatId, "Schick mir bitte eine Sprachnachricht 🎙️");
@@ -66,6 +67,10 @@ module.exports = async (req, res) => {
           if (action.table === "workouts" && action.data.exercise) {
             const feedback = await checkProgressionFeedback(action.data.exercise);
             if (feedback) results.push(`💪 ${feedback}`);
+          }
+          if (action.table === "body_metrics") {
+            const feedback = await checkBodyProgressFeedback();
+            if (feedback) results.push(`📊 ${feedback}`);
           }
         } else if (action.type === "trait_new") {
           await ensureTraitExists(action.name, action.is_flaw);
@@ -199,6 +204,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
    - expenses: amount, category, description
+   - income: amount, source, description
    - fixed_costs: name, betrag, rhythmus, kategorie
    - debts: name, restbetrag, monatliche_rate, zinssatz
    - finance_goals: title, target_amount, target_date
@@ -391,6 +397,46 @@ async function handleCheckinAnswer(chatId, transcript, session) {
   await saveCheckinSession(chatId, session.trait_ids, nextIndex);
   const nextTrait = await getTraitById(session.trait_ids[nextIndex]);
   await sendTelegramMessage(chatId, formatTraitQuestion(nextTrait, nextIndex + 1, session.trait_ids.length));
+}
+
+// ---------- Chat-ID merken (für proaktive Nachrichten) ----------
+
+async function rememberChatId(chatId) {
+  try {
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/bot_settings?on_conflict=id`, {
+      method: "POST",
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates",
+      },
+      body: JSON.stringify({ id: 1, chat_id: chatId, updated_at: new Date().toISOString() }),
+    });
+  } catch (err) {
+    console.error("Konnte Chat-ID nicht speichern:", err);
+  }
+}
+
+// ---------- Gewichts-/Körperfett-Trend-Feedback ----------
+
+async function checkBodyProgressFeedback() {
+  try {
+    const history = await fetchRecent("body_metrics", 8);
+    if (!history || history.length < 2) return null;
+
+    const goals = await fetchRecent("training_goals", 5);
+    const nutritionGoals = await fetchRecent("nutrition_goals", 1);
+
+    const systemPrompt = `Du bist ein Personal Trainer. Du bekommst den Gewichts-/Körperfett-Verlauf einer Person (neueste zuerst), ihre Trainingsziele und ihr aktuelles Ernährungsziel (Kalorien/Protein). Beurteile in 1-2 kurzen Sätzen, ob der Trend zum Ziel passt, und gib bei Bedarf eine konkrete Anpassungsempfehlung (z.B. "Kalorien um 100-150 senken" oder "mehr Cardio" oder "weiter so"). Sei konkret, keine Grundsatzerklärungen.`;
+
+    const userMsg = `Verlauf: ${JSON.stringify(history)}\nTrainingsziele: ${JSON.stringify(goals)}\nErnährungsziel: ${JSON.stringify(nutritionGoals)}`;
+
+    return await callClaude(systemPrompt, userMsg, 300, "claude-sonnet-5");
+  } catch (err) {
+    console.error("Fehler beim Body-Progress-Feedback:", err);
+    return null;
+  }
 }
 
 // ---------- Progressions-Feedback ----------
