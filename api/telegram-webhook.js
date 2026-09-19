@@ -513,6 +513,7 @@ async function uploadToSupabaseStorage(fileName, buffer) {
   const res = await fetch(url, {
     method: "POST",
     headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
       "Content-Type": "image/jpeg",
     },
@@ -528,6 +529,7 @@ async function getSignedPhotoUrl(fileName) {
   const res = await fetch(url, {
     method: "POST",
     headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
       "Content-Type": "application/json",
     },
