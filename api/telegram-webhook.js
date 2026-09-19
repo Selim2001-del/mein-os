@@ -61,6 +61,9 @@ module.exports = async (req, res) => {
     for (const action of actions) {
       try {
         if (action.type === "insert") {
+          if (action.table === "nutrition_log") {
+            await refineNutritionWithSearch(action.data);
+          }
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
 
@@ -71,6 +74,10 @@ module.exports = async (req, res) => {
           if (action.table === "body_metrics") {
             const feedback = await checkBodyProgressFeedback();
             if (feedback) results.push(`📊 ${feedback}`);
+          }
+          if (action.table === "nutrition_log") {
+            const feedback = await checkNutritionFeedback();
+            if (feedback) results.push(`🍽️ ${feedback}`);
           }
         } else if (action.type === "trait_new") {
           await ensureTraitExists(action.name, action.is_flaw);
@@ -152,7 +159,15 @@ async function sendTelegramMessage(chatId, text) {
 
 // ---------- Claude Hilfsfunktionen ----------
 
-async function callClaude(system, userMessage, maxTokens = 1000, model = "claude-haiku-4-5-20251001") {
+async function callClaude(system, userMessage, maxTokens = 1000, model = "claude-haiku-4-5-20251001", tools = null) {
+  const body = {
+    model,
+    max_tokens: maxTokens,
+    system,
+    messages: [{ role: "user", content: userMessage }],
+  };
+  if (tools) body.tools = tools;
+
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -160,12 +175,7 @@ async function callClaude(system, userMessage, maxTokens = 1000, model = "claude
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      max_tokens: maxTokens,
-      system,
-      messages: [{ role: "user", content: userMessage }],
-    }),
+    body: JSON.stringify(body),
   });
 
   const data = await res.json();
@@ -199,6 +209,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 1. "insert" - ein normaler Fakt für eine dieser Tabellen:
    - tasks: title, category, priority, due_date
    - nutrition_log: description, calories, protein_g
+     WICHTIG: Falls die Person keine genauen Zahlen nennt (z.B. nur "Hähnchen mit Reis gegessen"), schätze calories und protein_g SELBST anhand deines Ernährungswissens für eine typische Portion. Nenne IMMER eine Zahl, nie null/leer lassen.
    - nutrition_goals: daily_calorie_target, daily_protein_target
    - workouts: exercise, sets, reps, weight_kg, notes
    - body_metrics: weight_kg, body_fat_percent
@@ -415,6 +426,150 @@ async function rememberChatId(chatId) {
     });
   } catch (err) {
     console.error("Konnte Chat-ID nicht speichern:", err);
+  }
+}
+
+// ---------- Nährwert-Recherche für Markenprodukte ----------
+
+async function refineNutritionWithSearch(nutritionData) {
+  try {
+    // Schritt 1: Günstig prüfen, ob es sich um ein Markenprodukt handelt (keine Websuche nötig)
+    const brandCheckPrompt = `Prüfe, ob in dieser Mahlzeiten-Beschreibung ein KONKRETES Markenprodukt genannt wird (Hersteller + Produktname, z.B. "Ja! Grillkäse", "Aldi Crispy Chicken Nuggets 100%"). Antworte NUR mit JSON, ohne Markdown: {"is_branded": true oder false, "product_name": "kanonischer, kurzer Produktname oder null"}`;
+
+    const brandCheckText = await callClaude(brandCheckPrompt, nutritionData.description || "", 200, "claude-haiku-4-5-20251001");
+    const brandCheck = parseJson(brandCheckText);
+
+    if (brandCheck.is_branded && brandCheck.product_name) {
+      // Schritt 2: Im Cache nachschauen, ob wir das Produkt schon mal nachgeschlagen haben
+      const cached = await getCachedProduct(brandCheck.product_name);
+      if (cached) {
+        nutritionData.calories = cached.calories;
+        nutritionData.protein_g = cached.protein_g;
+      } else {
+        // Schritt 3: Noch nie gesehen -> jetzt einmalig im Web nachschauen
+        try {
+          const searchPrompt = `Suche im Web nach den Nährwerten (kcal und Protein) für eine typische Portion dieses Produkts: "${brandCheck.product_name}". Antworte NUR mit validem JSON, ohne Markdown: {"calories": Zahl, "protein_g": Zahl}`;
+
+          const searchText = await callClaude(
+            searchPrompt,
+            brandCheck.product_name,
+            1024,
+            "claude-sonnet-5",
+            [{ type: "web_search_20250305", name: "web_search" }]
+          );
+          const found = parseJson(searchText);
+
+          if (found.calories) nutritionData.calories = found.calories;
+          if (found.protein_g) nutritionData.protein_g = found.protein_g;
+
+          // Schritt 4: Für's nächste Mal im Cache speichern
+          if (nutritionData.calories) {
+            await cacheProduct(brandCheck.product_name, nutritionData.calories, nutritionData.protein_g);
+          }
+        } catch (searchErr) {
+          console.error("Websuche für Markenprodukt fehlgeschlagen:", searchErr);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Marken-Check fehlgeschlagen:", err);
+  } finally {
+    // Sicherheitsnetz: Falls JETZT IMMER NOCH keine Zahl vorhanden ist (egal aus welchem Grund),
+    // garantiert eine schnelle, einfache Schätzung nachholen - nie ohne Wert speichern.
+    if (!nutritionData.calories) {
+      try {
+        const fallbackText = await callClaude(
+          `Schätze für dieses Lebensmittel/diese Mahlzeit die Kalorien und das Protein einer typischen Portion. Antworte NUR mit validem JSON, ohne Markdown: {"calories": Zahl, "protein_g": Zahl}`,
+          nutritionData.description || "unbekannte Mahlzeit",
+          200,
+          "claude-haiku-4-5-20251001"
+        );
+        const fallback = parseJson(fallbackText);
+        if (fallback.calories) nutritionData.calories = fallback.calories;
+        if (fallback.protein_g) nutritionData.protein_g = fallback.protein_g;
+      } catch (fallbackErr) {
+        console.error("Auch Fallback-Schätzung fehlgeschlagen:", fallbackErr);
+      }
+    }
+  }
+}
+
+async function getCachedProduct(name) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/nutrition_products_cache?product_name=ilike.${encodeURIComponent(name)}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows && rows[0] ? rows[0] : null;
+}
+
+async function cacheProduct(name, calories, protein_g) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/nutrition_products_cache`, {
+    method: "POST",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify({ product_name: name, calories, protein_g }),
+  });
+}
+
+// ---------- Tägliches Ernährungs-Feedback ----------
+
+async function checkNutritionFeedback() {
+  try {
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayIso = todayStart.toISOString();
+
+    const url = `${process.env.SUPABASE_URL}/rest/v1/nutrition_log?logged_at=gte.${todayIso}`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const todayMeals = await res.json();
+
+    const totalCalories = todayMeals.reduce((sum, m) => sum + (m.calories || 0), 0);
+    const totalProtein = todayMeals.reduce((sum, m) => sum + (m.protein_g || 0), 0);
+
+    const goalRes = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/nutrition_goals?order=updated_at.desc&limit=1`,
+      {
+        headers: {
+          apikey: process.env.SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        },
+      }
+    );
+    const goals = await goalRes.json();
+    if (!goals || goals.length === 0) return null; // kein Ziel hinterlegt, kein Feedback möglich
+
+    const calorieGoal = goals[0].daily_calorie_target;
+    const proteinGoal = goals[0].daily_protein_target;
+
+    if (!calorieGoal) return null;
+
+    const diff = totalCalories - calorieGoal;
+
+    if (diff > 200) {
+      return `Heute bisher ${totalCalories} von ${calorieGoal} kcal (${diff} kcal drüber). Protein: ${totalProtein}/${proteinGoal || "?"}g. Für den Rest des Tages leichter essen, oder morgen etwas ausgleichen.`;
+    } else if (diff < -300 && todayMeals.length >= 2) {
+      return `Heute bisher nur ${totalCalories} von ${calorieGoal} kcal. Protein: ${totalProtein}/${proteinGoal || "?"}g. Achte darauf, nicht zu wenig zu essen, sonst leidet der Muskelerhalt.`;
+    } else {
+      return `Heute bisher ${totalCalories} von ${calorieGoal} kcal, Protein ${totalProtein}/${proteinGoal || "?"}g - liegt gut im Rahmen.`;
+    }
+  } catch (err) {
+    console.error("Fehler beim Ernährungs-Feedback:", err);
+    return null;
   }
 }
 
