@@ -163,11 +163,13 @@ async function callClaude(system, userMessage, maxTokens = 1000, model = "claude
   if (!res.ok) {
     throw new Error(`Claude-API-Fehler (${res.status}): ${JSON.stringify(data)}`);
   }
-  if (!data.content || !data.content[0] || !data.content[0].text) {
-    throw new Error(`Claude-Antwort hatte kein Text-Feld: ${JSON.stringify(data)}`);
+
+  const textBlock = data.content && data.content.find((block) => block.type === "text");
+  if (!textBlock) {
+    throw new Error(`Claude-Antwort hatte keinen Text-Block: ${JSON.stringify(data)}`);
   }
 
-  return data.content[0].text;
+  return textBlock.text;
 }
 
 function parseJson(text) {
@@ -176,7 +178,11 @@ function parseJson(text) {
 }
 
 async function classifyWithClaude(transcript) {
-  const systemPrompt = `Du bekommst eine gesprochene Notiz einer Person. Sie kann mehrere unabhängige Teile enthalten: neue Fakten zum Speichern, Fragen zu bisherigen Daten, oder Sonderbefehle.
+  const today = new Date().toISOString().split("T")[0];
+
+  const systemPrompt = `Heutiges Datum: ${today}. Nutze das für alle relativen Datumsangaben (z.B. "Ende des Jahres", "in 3 Monaten").
+
+Du bekommst eine gesprochene Notiz einer Person. Sie kann mehrere unabhängige Teile enthalten: neue Fakten zum Speichern, Fragen zu bisherigen Daten, oder Sonderbefehle.
 
 Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
