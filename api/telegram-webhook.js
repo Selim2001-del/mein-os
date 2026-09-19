@@ -412,7 +412,7 @@ Trainingsziele: ${JSON.stringify(goals)}`;
 
   const systemPrompt = `Du bist ein erfahrener Personal Trainer. Erstelle basierend auf den Trainingsdaten, Körperwerten und Zielen der Person einen konkreten, strukturierten Trainingsplan. Falls noch keine Daten vorhanden sind, erstelle einen sinnvollen Einsteiger-Plan. Antworte NUR mit dem Plan als lesbarem Text.`;
 
-  return await callClaude(systemPrompt, context, 2000, "claude-sonnet-5");
+  return await callClaude(systemPrompt, context, 4000, "claude-sonnet-5");
 }
 
 async function deactivateOldPlans() {
