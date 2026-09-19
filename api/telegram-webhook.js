@@ -244,7 +244,13 @@ WICHTIG: Wenn die Person mehrere Eigenschaften mit "Note X" nennt (Schulnoten-Be
 
 Beispiel:
 Eingabe: "Verantwortung heute Note 3, Rechtfertigen Note 5, Präsenz Note 2"
-Ausgabe: [{"type":"trait_checkin","trait_name":"Verantwortung","note":3,"notes":null},{"type":"trait_checkin","trait_name":"Rechtfertigen","note":5,"notes":null},{"type":"trait_checkin","trait_name":"Präsenz","note":2,"notes":null}]`;
+Ausgabe: [{"type":"trait_checkin","trait_name":"Verantwortung","note":3,"notes":null},{"type":"trait_checkin","trait_name":"Rechtfertigen","note":5,"notes":null},{"type":"trait_checkin","trait_name":"Präsenz","note":2,"notes":null}]
+
+WICHTIG: Jede Frage nach bereits gespeicherten/bekannten Infos (z.B. "was ist Übung 5 in meinem Trainingsplan", "was hab ich letzte Woche gegessen", "was war nochmal mein Ziel") ist IMMER "question", NIEMALS "insert" mit journal_entries - auch wenn die Frage sich auf eine vorherige Bot-Antwort/Aktion bezieht statt auf eine neue Tatsache.
+
+Beispiel:
+Eingabe: "Was ist denn jetzt Übung 5 in meinem neuen Trainingsplan?"
+Ausgabe: [{"type":"question","text":"Was ist Übung 5 im Trainingsplan?","relevant_tables":["training_plan"]}]`;
 
   const text = await callClaude(systemPrompt, transcript, 1500, "claude-sonnet-5");
   const parsed = parseJson(text);
@@ -587,7 +593,7 @@ async function checkBodyProgressFeedback() {
 
     const userMsg = `Verlauf: ${JSON.stringify(history)}\nTrainingsziele: ${JSON.stringify(goals)}\nErnährungsziel: ${JSON.stringify(nutritionGoals)}`;
 
-    return await callClaude(systemPrompt, userMsg, 300, "claude-sonnet-5");
+    return await callClaude(systemPrompt, userMsg, 1000, "claude-sonnet-5");
   } catch (err) {
     console.error("Fehler beim Body-Progress-Feedback:", err);
     return null;
