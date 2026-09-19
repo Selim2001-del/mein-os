@@ -253,6 +253,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
    Format: {"type":"delete","table":"tabellenname","match_text":"charakteristischer Text zum Finden des Eintrags"}
+   WICHTIG: match_text darf NUR die charakteristischen Inhaltswörter des Eintrags selbst enthalten (z.B. "Steuerzahlung", "Testeintrag"), NIEMALS Wörter wie "löschen", "entfernen", "die Aufgabe" - das sind Befehlswörter, keine Suchbegriffe.
    Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
@@ -493,7 +494,11 @@ async function handleDelete(table, matchText) {
     return `Löschen aus "${table}" wird nicht unterstützt.`;
   }
 
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?${column}=ilike.*${encodeURIComponent(matchText)}*`;
+  // Wortweise suchen statt exaktem Teilstring - "Testeintrag" findet auch "Testeintrag zum Löschen"
+  const words = matchText.trim().split(/\s+/).filter(Boolean);
+  const pattern = `*${words.join("*")}*`;
+
+  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?${column}=ilike.${encodeURIComponent(pattern)}`;
   const res = await fetch(url, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
