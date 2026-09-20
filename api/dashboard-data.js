@@ -30,6 +30,7 @@ module.exports = async (req, res) => {
       expenses,
       financeGoals,
       financeSnapshots,
+      expenseBudgets,
     ] = await Promise.all([
       sb("tasks?done=eq.false&order=created_at.desc&limit=50"),
       sb("tasks?done=eq.true&select=id&limit=500"),
@@ -48,6 +49,7 @@ module.exports = async (req, res) => {
       sb(`expenses?logged_at=gte.${monthStartIso()}`),
       sb("finance_goals"),
       sb("finance_snapshots?order=logged_at.desc&limit=30"),
+      sb("expense_budgets"),
     ]);
 
     const todayStr = new Date().toISOString().split("T")[0];
@@ -89,6 +91,7 @@ module.exports = async (req, res) => {
       expenses,
       financeGoals,
       financeSnapshots,
+      expenseBudgets,
     });
   } catch (err) {
     console.error("Fehler beim Laden der Dashboard-Daten:", err);
