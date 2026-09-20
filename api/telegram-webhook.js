@@ -88,6 +88,9 @@ module.exports = async (req, res) => {
           if (action.table === "workouts" && action.data.exercise) {
             const feedback = await checkProgressionFeedback(action.data.exercise);
             if (feedback) results.push(`💪 ${feedback}`);
+
+            const weeklyCount = await getWeeklyTrainingDayCount();
+            results.push(`🗓️ Training Nr. ${weeklyCount} diese Woche (Mo-So)`);
           }
           if (action.table === "body_metrics") {
             const feedback = await checkBodyProgressFeedback();
@@ -96,6 +99,10 @@ module.exports = async (req, res) => {
           if (action.table === "nutrition_log") {
             const feedback = await checkNutritionFeedback();
             if (feedback) results.push(`🍽️ ${feedback}`);
+          }
+          if (action.table === "daily_steps") {
+            const stepsFeedback = await checkStepsFeedback();
+            if (stepsFeedback) results.push(`🚶 ${stepsFeedback}`);
           }
         } else if (action.type === "trait_new") {
           await ensureTraitExists(action.name, action.is_flaw);
@@ -261,6 +268,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
      WICHTIG: Falls die Person keine genauen Zahlen nennt (z.B. nur "Hähnchen mit Reis gegessen"), schätze calories und protein_g SELBST anhand deines Ernährungswissens für eine typische Portion. Nenne IMMER eine Zahl, nie null/leer lassen.
    - nutrition_goals: daily_calorie_target, daily_protein_target
    - workouts: exercise, sets, reps, weight_kg, notes
+     WICHTIG: Auch eine GROBE Aussage ohne Details zählt als Workout-Eintrag, z.B. "Pull Tag gemacht", "Training heute abgeschlossen", "war im Gym" -> exercise = kurze Beschreibung (z.B. "Pull Tag"), sets/reps/weight_kg dürfen dann leer/null bleiben. NICHT als journal_entries einordnen, nur weil keine genauen Sätze/Wiederholungen genannt wurden.
+   - daily_steps: steps
+     Hinweis: logged_at ist automatisch heute, außer die Person nennt explizit ein anderes Datum.
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
    - expenses: amount, category, description
@@ -734,6 +744,65 @@ Finde den EINEN am besten passenden Eintrag (auch bei ungenauer/anderer Formulie
   if (!deleteRes.ok) throw new Error(`Supabase-Fehler beim Löschen (${deleteRes.status}): ${await deleteRes.text()}`);
 
   return `Gelöscht aus "${table}": "${match.matched_text}"`;
+}
+
+// ---------- Wochen-Trainingstage-Zähler ----------
+
+async function getWeeklyTrainingDayCount() {
+  const now = new Date();
+  const day = now.getUTCDay(); // 0 = Sonntag
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const monday = new Date(now);
+  monday.setUTCDate(now.getUTCDate() - diffToMonday);
+  monday.setUTCHours(0, 0, 0, 0);
+
+  const url = `${process.env.SUPABASE_URL}/rest/v1/workouts?select=logged_at&logged_at=gte.${monday.toISOString()}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) return "?";
+  const rows = await res.json();
+  const distinctDays = new Set(rows.map((r) => r.logged_at.split("T")[0]));
+  return distinctDays.size;
+}
+
+// ---------- Schritte-Feedback ----------
+
+async function checkStepsFeedback() {
+  try {
+    const todayStr = new Date().toISOString().split("T")[0];
+    const url = `${process.env.SUPABASE_URL}/rest/v1/daily_steps?logged_at=eq.${todayStr}`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    const totalToday = rows.reduce((s, r) => s + (r.steps || 0), 0);
+
+    const goalRes = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/training_goals?notes=ilike.*Schritt*&order=updated_at.desc&limit=1`,
+      {
+        headers: {
+          apikey: process.env.SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        },
+      }
+    );
+    const goalRows = goalRes.ok ? await goalRes.json() : [];
+    const goalMatch = goalRows[0]?.notes?.match(/(\d+)[.,]?(\d{3})?\s*Schritte/i);
+    const stepGoal = goalMatch ? parseInt(goalMatch[1] + (goalMatch[2] || ""), 10) : 10000;
+
+    return `${totalToday.toLocaleString("de-DE")} / ${stepGoal.toLocaleString("de-DE")} Schritte heute`;
+  } catch (err) {
+    console.error("Fehler beim Schritte-Feedback:", err);
+    return null;
+  }
 }
 
 // ---------- Chat-ID merken (für proaktive Nachrichten) ----------
