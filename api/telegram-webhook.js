@@ -49,7 +49,9 @@ module.exports = async (req, res) => {
         return res.status(200).send("OK");
       }
 
-      if (wordCount <= 6 && parseGermanNumber(transcript) !== null) {
+      const hasNote = parseGermanNumber(transcript) !== null;
+      const hasSkip = /überspringen|skip|weiter|nächste/i.test(transcript);
+      if (wordCount <= 6 && (hasNote || hasSkip)) {
         await handleCheckinAnswer(chatId, transcript, activeSession);
         return res.status(200).send("OK");
       }
@@ -57,7 +59,7 @@ module.exports = async (req, res) => {
     }
 
     // 4. Will die Person einen Check-in STARTEN?
-    const wantsCheckup = /check[\s-]?in|check[\s-]?up|kpis?\s*(von\s*)?(meiner?\s*)?(persönlichkeit\s*)?durchgehen|eigenschaften\s*durchgehen|charaktereigenschaften\s*durchgehen|flaws?\s*durchgehen/i.test(transcript);
+    const wantsCheckup = /check[\s-]?in|check[\s-]?up|kpis?\s*(von\s*)?(meiner?\s*)?(persönlichkeit\s*)?durchgehen|persönlichkeits[\s-]?kpis?|tageskontroll[\s-]?kpis?|tägliche[nr]?\s*(check|kpis?)|eigenschaften\s*durchgehen|charaktereigenschaften\s*durchgehen|flaws?\s*durchgehen/i.test(transcript);
     if (wantsCheckup) {
       await startCheckinSession(chatId);
       return res.status(200).send("OK");
@@ -392,11 +394,31 @@ async function startCheckinSession(chatId) {
     return;
   }
 
-  const traitIds = traits.map((t) => t.id);
+  // Bereits heute beantwortete Eigenschaften automatisch überspringen
+  const todayStr = new Date().toISOString().split("T")[0];
+  const answeredUrl = `${process.env.SUPABASE_URL}/rest/v1/personality_checkins?select=trait_id&logged_at=eq.${todayStr}`;
+  const answeredRes = await fetch(answeredUrl, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const answeredToday = answeredRes.ok ? await answeredRes.json() : [];
+  const answeredIds = new Set(answeredToday.map((a) => a.trait_id));
+
+  const remainingTraits = traits.filter((t) => !answeredIds.has(t.id));
+
+  if (remainingTraits.length === 0) {
+    await sendTelegramMessage(chatId, "✅ Du hast heute schon alle Eigenschaften bewertet. Guter Job!");
+    return;
+  }
+
+  const traitIds = remainingTraits.map((t) => t.id);
   await saveCheckinSession(chatId, traitIds, 0);
 
   const firstTrait = await getTraitById(traitIds[0]);
-  await sendTelegramMessage(chatId, `Los geht's, ${traits.length} Eigenschaften:\n\n${formatTraitQuestion(firstTrait, 1, traits.length)}`);
+  const skippedNote = answeredIds.size > 0 ? ` (${answeredIds.size} heute schon erledigt, übersprungen)` : "";
+  await sendTelegramMessage(chatId, `Los geht's, ${remainingTraits.length} Eigenschaften${skippedNote}:\n\n${formatTraitQuestion(firstTrait, 1, remainingTraits.length)}`);
 }
 
 function parseGermanNumber(text) {
@@ -412,21 +434,24 @@ function parseGermanNumber(text) {
 }
 
 async function handleCheckinAnswer(chatId, transcript, session) {
+  const wantsSkip = /überspringen|skip|weiter|nächste/i.test(transcript);
   const note = parseGermanNumber(transcript);
 
-  if (note === null) {
-    await sendTelegramMessage(chatId, "Ich konnte keine Note (1-6) erkennen, sag's nochmal bitte 🙂");
+  if (note === null && !wantsSkip) {
+    await sendTelegramMessage(chatId, "Ich konnte keine Note (1-6) erkennen, sag's nochmal bitte, oder sag \"überspringen\" 🙂");
     return;
   }
 
   const currentTraitId = session.trait_ids[session.current_index];
-  await saveToSupabase("personality_checkins", { trait_id: currentTraitId, note });
+  if (!wantsSkip) {
+    await saveToSupabase("personality_checkins", { trait_id: currentTraitId, note });
+  }
 
   const nextIndex = session.current_index + 1;
 
   if (nextIndex >= session.trait_ids.length) {
     await deleteCheckinSession(chatId);
-    await sendTelegramMessage(chatId, `✅ Alles erledigt! ${session.trait_ids.length} Eigenschaften bewertet. Guter Job heute.`);
+    await sendTelegramMessage(chatId, `✅ Alles erledigt! ${session.trait_ids.length} Eigenschaften durchgegangen. Guter Job heute.`);
     return;
   }
 
