@@ -118,6 +118,9 @@ module.exports = async (req, res) => {
         } else if (action.type === "complete_task") {
           const completeResult = await handleCompleteTask(action.description);
           results.push(`✅ ${completeResult}`);
+        } else if (action.type === "reopen_task") {
+          const reopenResult = await handleReopenTask(action.description);
+          results.push(`↩️ ${reopenResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -262,6 +265,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 7. "complete_task" - die Person hat eine Aufgabe erledigt und möchte sie als "fertig" markieren (NICHT löschen), z.B. "ich hab die Aufgabe mit meiner Schwester erledigt", "Steuerzahlung ist fertig":
    Format: {"type":"complete_task","description":"welche Aufgabe, in normalen Worten"}
+
+8. "reopen_task" - die Person möchte eine bereits als erledigt markierte Aufgabe wieder als OFFEN zurückholen, z.B. "die Aufgabe X ist doch nicht erledigt, hol sie zurück", "war ein Versehen, X ist noch offen":
+   Format: {"type":"reopen_task","description":"welche Aufgabe, in normalen Worten"}
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -501,6 +507,51 @@ async function upsertDebt(data) {
     // Neu -> Ausgangspunkt automatisch auf den aktuellen Rest-Betrag setzen
     await saveToSupabase("debts", { ...data, original_betrag: data.restbetrag });
   }
+}
+
+// ---------- Aufgabe wieder als offen zurückholen ----------
+
+async function handleReopenTask(description) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/tasks?select=id,title&done=eq.true&order=created_at.desc&limit=100`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine erledigten Aufgaben vorhanden.`;
+  }
+
+  const matchPrompt = `Hier ist eine Liste bereits erledigter Aufgaben (id + Titel):
+${JSON.stringify(rows)}
+
+Die Person möchte eine davon wieder als offen zurückholen, beschrieben als: "${description}"
+
+Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_text": "der Titel des gefundenen Eintrags oder null", "reason": "kurze Begründung, v.a. falls nichts eindeutig passt"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.id) {
+    return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/tasks?id=eq.${match.id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ done: false }),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Zurückholen (${patchRes.status}): ${await patchRes.text()}`);
+
+  return `Aufgabe wieder offen: "${match.matched_text}"`;
 }
 
 // ---------- Aufgabe als erledigt markieren ----------
