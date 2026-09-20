@@ -77,6 +77,11 @@ module.exports = async (req, res) => {
             results.push(`✅ Gespeichert in "debts"`);
             continue;
           }
+          if (action.table === "expense_budgets") {
+            await upsertExpenseBudget(action.data);
+            results.push(`✅ Budget gesetzt für "${action.data.category}"`);
+            continue;
+          }
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
 
@@ -237,6 +242,8 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
    - expenses: amount, category, description
+   - expense_budgets: category, monthly_limit
+     Hinweis: Reicht Kategorie-Name + Limit-Betrag (z.B. "Limit für Lebensmittel: 400 Euro im Monat"). Der Bot aktualisiert automatisch statt zu duplizieren.
    - income: amount, source, description
    - fixed_costs: name, betrag, rhythmus, kategorie
    - debts: name, restbetrag, monatliche_rate, zinssatz
@@ -473,6 +480,34 @@ async function handleCheckinAnswer(chatId, transcript, session) {
 }
 
 // ---------- Schulden: Upsert per Name (Fortschritt trackbar) ----------
+
+// ---------- Ausgaben-Budgets: Upsert per Kategorie ----------
+
+async function upsertExpenseBudget(data) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/expense_budgets?category=ilike.${encodeURIComponent(data.category)}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const existing = await res.json();
+
+  if (existing && existing.length > 0) {
+    const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/expense_budgets?id=eq.${existing[0].id}`, {
+      method: "PATCH",
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ monthly_limit: data.monthly_limit, updated_at: new Date().toISOString() }),
+    });
+    if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren des Budgets (${patchRes.status}): ${await patchRes.text()}`);
+  } else {
+    await saveToSupabase("expense_budgets", data);
+  }
+}
 
 async function upsertDebt(data) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/debts?name=ilike.${encodeURIComponent(data.name)}`;
