@@ -284,9 +284,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen. Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
    Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
 
-5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten (z.B. "wie viel hab ich für Lebensmittel ausgegeben", "was ist mein Trainingsplan für heute, ich mache Tag 1", "wie liefen meine Charaktereigenschaften diese Woche"):
-   Format: {"type":"question","text":"die Frage","relevant_tables":["expenses"]}
-   Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung.
+5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten. Das umfasst auch OFFENE, GEFÜHLSBASIERTE Fragen wie "ich hab das Gefühl, ich mache keinen Progress", "läuft's finanziell besser?", "wie geht's mir eigentlich gerade" - bei solchen Fragen mehrere relevante Tabellen gleichzeitig auswählen (nicht nur eine), damit eine fundierte, ehrliche Antwort anhand der echten Daten möglich ist (z.B. bei "kein Progress"-Gefühl: body_metrics + workouts + training_goals; bei "finanziell besser"-Gefühl: debts + expenses + income + finance_snapshots + finance_goals):
+   Format: {"type":"question","text":"die Frage","relevant_tables":["expenses","debts"]}
+   Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung. Bis zu 5 Tabellen gleichzeitig sind erlaubt, wenn die Frage das braucht.
 
 6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
    Format: {"type":"delete","table":"tabellenname","description":"was gelöscht werden soll, in normalen Worten"}
@@ -1167,9 +1167,15 @@ async function answerQuestion(question, relevantTables) {
     context += `\n\nDaten aus "${table}":\n${JSON.stringify(rows)}`;
   }
 
-  const systemPrompt = `Du bist ein persönlicher Assistent. Beantworte die Frage der Person basierend AUSSCHLIESSLICH auf den mitgelieferten Daten. Sei kurz und konkret (2-4 Sätze). Falls die Daten nicht ausreichen, sag das ehrlich.`;
+  const systemPrompt = `Du bist ein persönlicher Assistent. Beantworte die Frage der Person basierend AUSSCHLIESSLICH auf den mitgelieferten Daten.
 
-  return await callClaude(systemPrompt, `Frage: ${question}${context}`, 500, "claude-sonnet-5");
+Falls es eine einfache Faktenfrage ist (z.B. "wie viel hab ich ausgegeben"): kurz und konkret antworten (2-4 Sätze).
+
+Falls es eine OFFENE oder GEFÜHLSBASIERTE Frage ist (z.B. "ich hab das Gefühl, ich mache keinen Progress", "läuft's finanziell besser"): schau dir den echten Trend in den Daten an (Verlauf über Zeit, nicht nur den letzten Wert) und gib eine ehrliche, aber unterstützende Einschätzung - bestätige das Gefühl der Person NICHT automatisch, wenn die Daten etwas anderes zeigen (z.B. wenn tatsächlich Fortschritt da ist, auch wenn er sich nicht danach anfühlt), aber beschönige auch nichts, wenn die Daten wirklich Stillstand/Verschlechterung zeigen. Etwas mehr Raum ist hier okay (4-6 Sätze), aber bleib konkret und beziehe dich auf echte Zahlen/Einträge, keine Plattitüden.
+
+Falls die Daten nicht ausreichen, sag das ehrlich.`;
+
+  return await callClaude(systemPrompt, `Frage: ${question}${context}`, 800, "claude-sonnet-5");
 }
 
 // ---------- Supabase: Speichern ----------
