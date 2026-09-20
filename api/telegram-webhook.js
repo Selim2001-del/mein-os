@@ -285,7 +285,7 @@ Beispiel:
 Eingabe: "Was ist denn jetzt Übung 5 in meinem neuen Trainingsplan?"
 Ausgabe: [{"type":"question","text":"Was ist Übung 5 im Trainingsplan?","relevant_tables":["training_plan"]}]`;
 
-  const text = await callClaude(systemPrompt, transcript, 1500, "claude-sonnet-5");
+  const text = await callClaude(systemPrompt, transcript, 4000, "claude-sonnet-5");
   const parsed = parseJson(text);
   const actions = Array.isArray(parsed) ? parsed : [parsed];
   console.log("Klassifiziert als:", JSON.stringify(actions));
