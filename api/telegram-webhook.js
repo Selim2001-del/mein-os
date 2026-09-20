@@ -104,6 +104,10 @@ module.exports = async (req, res) => {
             const stepsFeedback = await checkStepsFeedback();
             if (stepsFeedback) results.push(`🚶 ${stepsFeedback}`);
           }
+          if (action.table === "journal_entries") {
+            const reflection = await generateJournalReflection(action.data.raw_text || action.data.summary);
+            if (reflection) results.push(`💭 ${reflection}`);
+          }
         } else if (action.type === "trait_new") {
           await ensureTraitExists(action.name, action.is_flaw);
           results.push(`✅ Neue Eigenschaft angelegt: "${action.name}"`);
@@ -744,6 +748,43 @@ Finde den EINEN am besten passenden Eintrag (auch bei ungenauer/anderer Formulie
   if (!deleteRes.ok) throw new Error(`Supabase-Fehler beim Löschen (${deleteRes.status}): ${await deleteRes.text()}`);
 
   return `Gelöscht aus "${table}": "${match.matched_text}"`;
+}
+
+// ---------- Journal-Reflexion mit Lebens-Kontext ----------
+
+async function generateJournalReflection(currentText) {
+  if (!currentText) return null;
+
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/life_profile?select=category,topic,title,content,interpretation&limit=300`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    const lifeProfile = res.ok ? await res.json() : [];
+
+    if (lifeProfile.length === 0) {
+      return null; // noch keine Lebens-Erkenntnisse hinterlegt, keine Reflexion möglich
+    }
+
+    const systemPrompt = `Du bist ein einfühlsamer, ehrlicher Begleiter für Selbstreflexion. Du bekommst Hintergrundwissen über die Person (destillierte Erkenntnisse aus jahrelanger Selbstreflexion) und ihre gerade geschriebene/gesprochene Nachricht.
+
+Falls die Nachricht erkennbar mit einem der Hintergrund-Punkte zusammenhängt (z.B. ein wiederkehrendes Muster, ein Flaw an dem sie arbeitet, eine alte Angst): weise das SANFT und KONKRET darauf hin, idealerweise mit einem Hinweis auf Wachstum/Veränderung, falls erkennbar ("früher X, jetzt Y").
+
+Falls kein klarer Zusammenhang erkennbar ist: gib einfach eine kurze, warme, unterstützende Reflexion zur Nachricht selbst, ohne das Hintergrundwissen zu erzwingen.
+
+WICHTIG: Du bist kein Ersatz für echte therapeutische Hilfe. Bei Anzeichen von echtem Leid/Krise: sanft dazu ermutigen, mit einer echten Person zu sprechen, statt nur hier weiterzumachen. Das Feld "interpretation" im Hintergrundwissen sind ausdrücklich ARBEITSHYPOTHESEN, keine festgestellten Fakten - entsprechend vorsichtig formulieren ("könnte", "vielleicht"), nicht als Diagnose oder Wahrheit hinstellen. Keine Diagnosen stellen. 2-4 Sätze, keine Plattitüden.
+
+Hintergrundwissen über die Person:
+${JSON.stringify(lifeProfile)}`;
+
+    return await callClaude(systemPrompt, currentText, 600, "claude-sonnet-5");
+  } catch (err) {
+    console.error("Fehler bei Journal-Reflexion:", err);
+    return null;
+  }
 }
 
 // ---------- Wochen-Trainingstage-Zähler ----------
