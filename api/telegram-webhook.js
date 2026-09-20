@@ -57,7 +57,7 @@ module.exports = async (req, res) => {
     }
 
     // 4. Will die Person einen Check-in STARTEN?
-    const wantsCheckup = /check-?in|checkup|kpis? durchgehen|eigenschaften durchgehen|flaws durchgehen/i.test(transcript);
+    const wantsCheckup = /check[\s-]?in|check[\s-]?up|kpis?\s*(von\s*)?(meiner?\s*)?(persönlichkeit\s*)?durchgehen|eigenschaften\s*durchgehen|charaktereigenschaften\s*durchgehen|flaws?\s*durchgehen/i.test(transcript);
     if (wantsCheckup) {
       await startCheckinSession(chatId);
       return res.status(200).send("OK");
