@@ -115,6 +115,9 @@ module.exports = async (req, res) => {
         } else if (action.type === "delete") {
           const deleteResult = await handleDelete(action.table, action.description);
           results.push(`🗑️ ${deleteResult}`);
+        } else if (action.type === "complete_task") {
+          const completeResult = await handleCompleteTask(action.description);
+          results.push(`✅ ${completeResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -255,7 +258,10 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
    Format: {"type":"delete","table":"tabellenname","description":"was gelöscht werden soll, in normalen Worten"}
-   Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits
+   Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits, personality_checkins
+
+7. "complete_task" - die Person hat eine Aufgabe erledigt und möchte sie als "fertig" markieren (NICHT löschen), z.B. "ich hab die Aufgabe mit meiner Schwester erledigt", "Steuerzahlung ist fertig":
+   Format: {"type":"complete_task","description":"welche Aufgabe, in normalen Worten"}
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -497,6 +503,51 @@ async function upsertDebt(data) {
   }
 }
 
+// ---------- Aufgabe als erledigt markieren ----------
+
+async function handleCompleteTask(description) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/tasks?select=id,title&done=eq.false&limit=100`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine offenen Aufgaben vorhanden.`;
+  }
+
+  const matchPrompt = `Hier ist eine Liste offener Aufgaben (id + Titel):
+${JSON.stringify(rows)}
+
+Die Person hat eine Aufgabe erledigt, beschrieben als: "${description}"
+
+Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_text": "der Titel des gefundenen Eintrags oder null", "reason": "kurze Begründung, v.a. falls nichts eindeutig passt"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.id) {
+    return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/tasks?id=eq.${match.id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ done: true }),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Abhaken (${patchRes.status}): ${await patchRes.text()}`);
+
+  return `Aufgabe erledigt: "${match.matched_text}" 🎉`;
+}
+
 // ---------- Löschen per Sprache/Text ----------
 
 async function handleDelete(table, description) {
@@ -513,21 +564,39 @@ async function handleDelete(table, description) {
     personality_traits: "name",
   };
 
-  const column = columnMap[table];
-  if (!column) {
-    return `Löschen aus "${table}" wird nicht unterstützt.`;
-  }
+  let rows, column;
 
-  // Alle (bzw. die letzten 100) Einträge holen, damit Claude selbst den passenden erkennen kann
-  const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?select=id,${column}&limit=100`;
-  const res = await fetch(url, {
-    headers: {
-      apikey: process.env.SUPABASE_SECRET_KEY,
-      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
-    },
-  });
-  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
-  const rows = await res.json();
+  if (table === "personality_checkins") {
+    // Sonderfall: Kein eigener Text, also Trait-Name + Note + Datum zu einem Anzeigetext kombinieren
+    const url = `${process.env.SUPABASE_URL}/rest/v1/personality_checkins?select=id,note,logged_at,personality_traits(name)&order=logged_at.desc&limit=100`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+    const raw = await res.json();
+    rows = raw.map((r) => ({
+      id: r.id,
+      display: `${r.personality_traits ? r.personality_traits.name : "?"} - Note ${r.note} (${r.logged_at})`,
+    }));
+    column = "display";
+  } else {
+    column = columnMap[table];
+    if (!column) {
+      return `Löschen aus "${table}" wird nicht unterstützt.`;
+    }
+    const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?select=id,${column}&limit=100`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+    rows = await res.json();
+  }
 
   if (!rows || rows.length === 0) {
     return `Keine Einträge in "${table}" vorhanden.`;
@@ -590,11 +659,29 @@ async function handlePhotoMessage(chatId, message) {
     await uploadToSupabaseStorage(fileName, imageBuffer);
     const signedUrl = await getSignedPhotoUrl(fileName);
 
-    // KI-Schätzung des Körperfettanteils aus dem Foto (grobe visuelle Einschätzung)
+    // Das allererste Foto holen, um einen echten visuellen Vergleich zu ermöglichen
+    let firstPhotoBuffer = null;
+    let isFirstPhotoEver = false;
+    try {
+      const firstPhotoRow = await getFirstPhotoRow();
+      if (firstPhotoRow && firstPhotoRow.photo_url) {
+        const firstRes = await fetch(firstPhotoRow.photo_url);
+        if (firstRes.ok) {
+          const arrBuf = await firstRes.arrayBuffer();
+          firstPhotoBuffer = Buffer.from(arrBuf);
+        }
+      } else {
+        isFirstPhotoEver = true;
+      }
+    } catch (fetchErr) {
+      console.error("Konnte erstes Foto nicht laden für Vergleich:", fetchErr);
+    }
+
+    // KI-Schätzung des Körperfettanteils + Vergleich zum ersten Foto (grobe visuelle Einschätzung)
     let bodyFatEstimate = null;
     let estimateNote = null;
     try {
-      const estimate = await estimateBodyFatFromPhoto(imageBuffer);
+      const estimate = await estimateBodyFatFromPhoto(imageBuffer, firstPhotoBuffer);
       bodyFatEstimate = estimate.body_fat_percent || null;
       estimateNote = estimate.note || null;
     } catch (visionErr) {
@@ -610,17 +697,46 @@ async function handlePhotoMessage(chatId, message) {
     const estimateText = bodyFatEstimate
       ? `\n📊 Geschätzter Körperfettanteil: ~${bodyFatEstimate}% (grobe visuelle Schätzung, keine Messung)${estimateNote ? `\n${estimateNote}` : ""}`
       : "";
-    await sendTelegramMessage(chatId, `✅ Fortschrittsfoto gespeichert.${estimateText}`);
+    const firstPhotoNote = isFirstPhotoEver ? "\n📸 Das ist dein erstes Fortschrittsfoto - ab jetzt kann verglichen werden!" : "";
+    await sendTelegramMessage(chatId, `✅ Fortschrittsfoto gespeichert.${estimateText}${firstPhotoNote}`);
   } catch (err) {
     console.error("Fehler beim Foto-Upload:", err);
     await sendTelegramMessage(chatId, `❌ Fehler beim Foto-Upload: ${err.message}`);
   }
 }
 
-async function estimateBodyFatFromPhoto(imageBuffer) {
+async function getFirstPhotoRow() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/body_metrics?photo_url=not.is.null&order=logged_at.asc&limit=1`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows && rows[0] ? rows[0] : null;
+}
+
+async function estimateBodyFatFromPhoto(imageBuffer, firstPhotoBuffer) {
   const base64Image = imageBuffer.toString("base64");
 
-  const systemPrompt = `Du bist ein erfahrener Fitness-Coach. Schätze anhand des Fotos den ungefähren Körperfettanteil der abgebildeten Person. Das ist nur eine grobe visuelle Einschätzung, keine exakte Messung - sei ehrlich in deiner Unsicherheit. Antworte NUR mit validem JSON, ohne Markdown: {"body_fat_percent": Zahl, "note": "ein kurzer Kommentar, z.B. sichtbare Veränderung zum letzten Foto falls erkennbar"}`;
+  const content = [];
+  let systemPrompt;
+
+  if (firstPhotoBuffer) {
+    const base64First = firstPhotoBuffer.toString("base64");
+    systemPrompt = `Du bist ein erfahrener Fitness-Coach. Du bekommst zwei Fotos: das ERSTE (ältestes Fortschrittsfoto) und das AKTUELLE. Schätze den ungefähren Körperfettanteil auf dem AKTUELLEN Foto (grobe visuelle Einschätzung, keine exakte Messung). Vergleiche außerdem sichtbar: Hat sich der Körper seit dem ersten Foto sichtbar verändert (Definition, Bauch, generelle Silhouette)? Sei ehrlich, auch wenn kein Unterschied erkennbar ist. Antworte NUR mit validem JSON, ohne Markdown: {"body_fat_percent": Zahl, "note": "kurzer Vergleichs-Kommentar zum ersten Foto"}`;
+    content.push({ type: "text", text: "Erstes Foto (Ausgangspunkt):" });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64First } });
+    content.push({ type: "text", text: "Aktuelles Foto:" });
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Image } });
+    content.push({ type: "text", text: "Schätze den Körperfettanteil auf dem aktuellen Foto und vergleiche mit dem ersten." });
+  } else {
+    systemPrompt = `Du bist ein erfahrener Fitness-Coach. Schätze anhand des Fotos den ungefähren Körperfettanteil der abgebildeten Person. Das ist nur eine grobe visuelle Einschätzung, keine exakte Messung - sei ehrlich in deiner Unsicherheit. Antworte NUR mit validem JSON, ohne Markdown: {"body_fat_percent": Zahl, "note": "ein kurzer Kommentar"}`;
+    content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Image } });
+    content.push({ type: "text", text: "Schätze den Körperfettanteil auf diesem Foto." });
+  }
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -633,15 +749,7 @@ async function estimateBodyFatFromPhoto(imageBuffer) {
       model: "claude-sonnet-5",
       max_tokens: 500,
       system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64Image } },
-            { type: "text", text: "Schätze den Körperfettanteil auf diesem Foto." },
-          ],
-        },
-      ],
+      messages: [{ role: "user", content }],
     }),
   });
 
