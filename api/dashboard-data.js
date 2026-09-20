@@ -14,6 +14,7 @@ module.exports = async (req, res) => {
   try {
     const [
       tasks,
+      completedTasks,
       nutritionHistory,
       nutritionGoals,
       workouts,
@@ -31,6 +32,7 @@ module.exports = async (req, res) => {
       financeSnapshots,
     ] = await Promise.all([
       sb("tasks?done=eq.false&order=created_at.desc&limit=50"),
+      sb("tasks?done=eq.true&select=id&limit=500"),
       sb(`nutrition_log?logged_at=gte.${daysAgoIso(60)}&order=logged_at.desc&limit=1000`),
       sb("nutrition_goals?order=updated_at.desc&limit=1"),
       sb("workouts?order=logged_at.desc&limit=100"),
@@ -51,7 +53,7 @@ module.exports = async (req, res) => {
     const todayStr = new Date().toISOString().split("T")[0];
     const nutritionTodayCount = nutritionHistory.filter((n) => (n.logged_at || "").startsWith(todayStr)).length;
 
-    const xp = computeXp({ debts, bodyMetrics, workouts, personalityCheckins, nutritionTodayCount, journalEntries });
+    const xp = computeXp({ debts, bodyMetrics, workouts, personalityCheckins, nutritionTodayCount, journalEntries, completedTasks });
     const { level, xpIntoLevel } = computeLevel(xp);
 
     // Check-in-Streak: aufeinanderfolgende Tage mit mind. 1 Check-in
@@ -94,7 +96,7 @@ module.exports = async (req, res) => {
   }
 };
 
-function computeXp({ debts, bodyMetrics, workouts, personalityCheckins, nutritionTodayCount, journalEntries }) {
+function computeXp({ debts, bodyMetrics, workouts, personalityCheckins, nutritionTodayCount, journalEntries, completedTasks }) {
   // Echter Fortschritt zählt viel mehr als reines Loggen.
 
   // Schulden abbauen: 1 XP pro 5€ tatsächlich abbezahlt (über alle Schulden hinweg)
@@ -119,6 +121,7 @@ function computeXp({ debts, bodyMetrics, workouts, personalityCheckins, nutritio
     (workouts || []).length * 3 +
     (personalityCheckins || []).length * 2 +
     (nutritionTodayCount || 0) * 1 +
+    (completedTasks || []).length * 1 +
     (journalEntries || []).length * 2;
 
   return Math.round(debtXp + bodyProgressXp + loggingXp);
