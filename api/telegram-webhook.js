@@ -82,6 +82,17 @@ module.exports = async (req, res) => {
             results.push(`✅ Budget gesetzt für "${action.data.category}"`);
             continue;
           }
+          if (action.table === "sales_kpis") {
+            const todayRow = await accumulateSalesKpis(action.data);
+            const feedback = await checkSalesFeedback();
+            results.push(`✅ Gespeichert in "sales_kpis"`);
+
+            const streakMsg = await checkSalesStreak(todayRow);
+            if (streakMsg) results.push(streakMsg);
+
+            if (feedback) results.push(`📈 ${feedback}`);
+            continue;
+          }
           await saveToSupabase(action.table, action.data);
           results.push(`✅ Gespeichert in "${action.table}"`);
 
@@ -275,6 +286,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
      WICHTIG: Auch eine GROBE Aussage ohne Details zählt als Workout-Eintrag, z.B. "Pull Tag gemacht", "Training heute abgeschlossen", "war im Gym" -> exercise = kurze Beschreibung (z.B. "Pull Tag"), sets/reps/weight_kg dürfen dann leer/null bleiben. NICHT als journal_entries einordnen, nur weil keine genauen Sätze/Wiederholungen genannt wurden.
    - daily_steps: steps
      Hinweis: logged_at ist automatisch heute, außer die Person nennt explizit ein anderes Datum.
+   - sales_kpis: cold_calls, vz_blocks, entscheider_erreicht, entscheider_gepitcht, termine_gelegt, sets_im_kalender, no_show, gekommen, sales_call_terminiert
+     Hinweis: Vertriebs-Kennzahlen für den Job. Nur die genannten Felder ausfüllen, Rest weglassen (nicht 0 erfinden). Werte addieren sich automatisch zum Tageswert, falls mehrfach am Tag gemeldet.
+   - sales_goals: daily_cold_call_target, daily_termine_target
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
    - expenses: amount, category, description
@@ -783,6 +797,208 @@ ${JSON.stringify(lifeProfile)}`;
     return await callClaude(systemPrompt, currentText, 600, "claude-sonnet-5");
   } catch (err) {
     console.error("Fehler bei Journal-Reflexion:", err);
+    return null;
+  }
+}
+
+// ---------- Sales-KPIs: Tages-Aufsummierung + Wochenvergleich ----------
+
+async function accumulateSalesKpis(data) {
+  const todayStr = new Date().toISOString().split("T")[0];
+  const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=eq.${todayStr}`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const existing = res.ok ? await res.json() : [];
+
+  const fields = ["cold_calls", "vz_blocks", "entscheider_erreicht", "entscheider_gepitcht", "termine_gelegt", "sets_im_kalender", "no_show", "gekommen", "sales_call_terminiert"];
+
+  if (existing.length > 0) {
+    const row = existing[0];
+    const merged = {};
+    for (const f of fields) {
+      merged[f] = (row[f] || 0) + (data[f] || 0);
+    }
+    const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/sales_kpis?id=eq.${row.id}`, {
+      method: "PATCH",
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(merged),
+    });
+    if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren der Sales-KPIs (${patchRes.status}): ${await patchRes.text()}`);
+    return { logged_at: todayStr, ...merged };
+  } else {
+    await saveToSupabase("sales_kpis", data);
+    const zeroed = Object.fromEntries(fields.map((f) => [f, data[f] || 0]));
+    return { logged_at: todayStr, ...zeroed };
+  }
+}
+
+function getMonday(date) {
+  const d = new Date(date);
+  const day = d.getUTCDay();
+  const diff = day === 0 ? 6 : day - 1;
+  d.setUTCDate(d.getUTCDate() - diff);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+// ---------- Sales-Tagesziel-Streak ----------
+
+async function checkSalesStreak(todayRow) {
+  try {
+    const goalRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/sales_goals?order=updated_at.desc&limit=1`, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    const goals = goalRes.ok ? await goalRes.json() : [];
+    const goal = goals[0];
+    if (!goal || !goal.daily_cold_call_target) return null; // ohne Ziel kein Streak möglich
+
+    const callsGoal = goal.daily_cold_call_target;
+    const termineGoal = goal.daily_termine_target || 0;
+    const todayHit = (todayRow.cold_calls || 0) >= callsGoal && (todayRow.termine_gelegt || 0) >= termineGoal;
+
+    if (!todayHit) return null; // heute noch nicht erreicht, keine Streak-Meldung nötig
+
+    // Letzte 60 Tage laden, um von heute rückwärts die Streak zu zählen
+    const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?order=logged_at.desc&limit=60`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    const rows = res.ok ? await res.json() : [];
+    const byDate = {};
+    rows.forEach((r) => (byDate[r.logged_at] = r));
+    byDate[todayRow.logged_at] = todayRow; // heutigen (frisch gemergten) Wert nutzen, nicht den alten
+
+    let streak = 0;
+    let cursor = new Date();
+    for (let i = 0; i < 60; i++) {
+      const dStr = cursor.toISOString().split("T")[0];
+      const row = byDate[dStr];
+      if (!row) {
+        cursor.setDate(cursor.getDate() - 1);
+        continue; // Tag ohne Eintrag (z.B. Wochenende) unterbricht die Streak nicht
+      }
+      const hit = (row.cold_calls || 0) >= callsGoal && (row.termine_gelegt || 0) >= termineGoal;
+      if (!hit) break;
+      streak++;
+      cursor.setDate(cursor.getDate() - 1);
+    }
+
+    let msg = `✅ Tagesziel erreicht! 🔥 ${streak} Tage Streak`;
+
+    if (streak > 0 && streak % 5 === 0) {
+      const newCallsGoal = Math.round((callsGoal * 1.1) / 10) * 10;
+      msg += `\n🚀 ${streak} Tage in Folge das Ziel erreicht - Zeit für mehr! Wie wär's mit ${newCallsGoal} Cold Calls/Tag ab jetzt?`;
+    }
+
+    return msg;
+  } catch (err) {
+    console.error("Fehler beim Sales-Streak:", err);
+    return null;
+  }
+}
+
+async function checkSalesFeedback() {
+  try {
+    const now = new Date();
+    const thisMonday = getMonday(now);
+
+    // Letzte 5 Wochen laden (aktuelle + 4 volle davor) für einen echten Trend
+    const rangeStart = new Date(thisMonday);
+    rangeStart.setUTCDate(thisMonday.getUTCDate() - 28);
+
+    const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=gte.${rangeStart.toISOString().split("T")[0]}&order=logged_at.asc`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+
+    const sum = (arr, field) => arr.reduce((s, r) => s + (r[field] || 0), 0);
+
+    // In Wochen-Buckets aufteilen (Woche 0 = aktuelle, 1 = letzte volle, usw.)
+    const weeks = [];
+    for (let i = 0; i < 5; i++) {
+      const start = new Date(thisMonday);
+      start.setUTCDate(thisMonday.getUTCDate() - i * 7);
+      const end = new Date(start);
+      end.setUTCDate(start.getUTCDate() + 7);
+      const startStr = start.toISOString().split("T")[0];
+      const endStr = end.toISOString().split("T")[0];
+      const weekRows = rows.filter((r) => r.logged_at >= startStr && r.logged_at < endStr);
+      const gepitcht = sum(weekRows, "entscheider_gepitcht");
+      const termine = sum(weekRows, "termine_gelegt");
+      weeks.push({
+        week: i === 0 ? "aktuell" : `vor ${i} Woche(n)`,
+        cold_calls: sum(weekRows, "cold_calls"),
+        termine_gelegt: termine,
+        entscheider_gepitcht: gepitcht,
+        terminierquote_prozent: gepitcht > 0 ? Math.round((termine / gepitcht) * 100) : null,
+        tage_mit_daten: weekRows.length,
+      });
+    }
+
+    const thisWeek = weeks[0];
+    const lastWeek = weeks[1];
+    const pctChange = (curr, prev) => (prev > 0 ? Math.round(((curr - prev) / prev) * 100) : null);
+    const callsChange = pctChange(thisWeek.cold_calls, lastWeek.cold_calls);
+    const termineChange = pctChange(thisWeek.termine_gelegt, lastWeek.termine_gelegt);
+
+    let header = `Diese Woche: ${thisWeek.cold_calls} Cold Calls`;
+    if (callsChange !== null) header += ` (${callsChange >= 0 ? "+" : ""}${callsChange}% ggü. letzter Woche)`;
+    header += `, ${thisWeek.termine_gelegt} Termine`;
+    if (termineChange !== null) header += ` (${termineChange >= 0 ? "+" : ""}${termineChange}%)`;
+
+    // Aktuelles Ziel + Tageswert
+    const todayStr = now.toISOString().split("T")[0];
+    const todayRow = rows.find((r) => r.logged_at === todayStr);
+    const goalRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/sales_goals?order=updated_at.desc&limit=1`, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    const goals = goalRes.ok ? await goalRes.json() : [];
+    const goal = goals[0] || null;
+    if (goal?.daily_cold_call_target && todayRow) {
+      header += `. Heute: ${todayRow.cold_calls || 0}/${goal.daily_cold_call_target} Cold Calls`;
+    }
+
+    // Claude beurteilen lassen: Terminierquote-Trend + ggf. Zielanpassung vorschlagen
+    const systemPrompt = `Du bist ein erfahrener Sales Coach. Du bekommst die Wochenzahlen der letzten 5 Wochen (Woche 0 = aktuelle, teils unvollständige Woche) sowie das aktuelle Tagesziel für Cold Calls.
+
+Gib in 1-2 kurzen Sätzen eine Einschätzung zur TERMINIERQUOTE (termine_gelegt / entscheider_gepitcht) über die Wochen - wird sie besser, schlechter, stabil? Nur volle Wochen (mit tage_mit_daten >= 5) fair vergleichen, nicht die unvollständige aktuelle Woche urteilen.
+
+WICHTIG - Zielanpassung: Falls die letzte VOLLE Woche (Woche 1, mit tage_mit_daten >= 5) im Schnitt deutlich (mehr als 15%) UNTER dem Tagesziel liegt: schlag konkret einen niedrigeren, realistischeren Tageswert vor (z.B. "setz dir erstmal 170 statt 200, das ist noch anspruchsvoll aber machbar"). Falls die letzten 1-2 vollen Wochen das Ziel konstant ERREICHT oder ÜBERTROFFEN haben: schlag eine leichte Steigerung vor. Falls keine klare Tendenz erkennbar ist oder zu wenig Daten vorhanden sind, sag nichts zur Zielanpassung.
+
+Sei knapp, konkret, wie ein guter Coach - keine Plattitüden. Antworte NUR mit dem Fließtext, keine Einleitung, keine Überschrift.`;
+
+    const insight = await callClaude(
+      systemPrompt,
+      JSON.stringify({ wochen: weeks, aktuelles_ziel: goal }),
+      500,
+      "claude-sonnet-5"
+    );
+
+    return `${header}\n${insight}`;
+  } catch (err) {
+    console.error("Fehler beim Sales-Feedback:", err);
     return null;
   }
 }
