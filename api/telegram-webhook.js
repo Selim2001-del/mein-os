@@ -224,10 +224,32 @@ function parseJson(text) {
   return JSON.parse(cleaned);
 }
 
+async function getKnownExpenseCategories() {
+  try {
+    const url = `${process.env.SUPABASE_URL}/rest/v1/expense_budgets?select=category`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return rows.map((r) => r.category);
+  } catch (err) {
+    console.error("Konnte bekannte Kategorien nicht laden:", err);
+    return [];
+  }
+}
+
 async function classifyWithClaude(transcript) {
   const today = new Date().toISOString().split("T")[0];
+  const knownCategories = await getKnownExpenseCategories();
+  const categoryHint = knownCategories.length
+    ? `\n\nBekannte Ausgaben-Kategorien dieser Person (mit gesetztem Budget): ${knownCategories.join(", ")}. Bei "expenses" IMMER versuchen, eine dieser Kategorien passend zur Beschreibung zu wählen - AUCH WENN die Person das Wort "Kategorie" nicht explizit sagt (z.B. "getankt" -> Kategorie "${knownCategories.find(c => /tank/i.test(c)) || "Tank"}", "eingekauft"/Essen -> "${knownCategories.find(c => /lebensmittel/i.test(c)) || "Lebensmittel"}"). Nur falls WIRKLICH nichts passt, eine neue, sinnvolle Kategorie wählen.`
+    : "";
 
-  const systemPrompt = `Heutiges Datum: ${today}. Nutze das für alle relativen Datumsangaben (z.B. "Ende des Jahres", "in 3 Monaten").
+  const systemPrompt = `Heutiges Datum: ${today}. Nutze das für alle relativen Datumsangaben (z.B. "Ende des Jahres", "in 3 Monaten").${categoryHint}
 
 Du bekommst eine gesprochene Notiz einer Person. Sie kann mehrere unabhängige Teile enthalten: neue Fakten zum Speichern, Fragen zu bisherigen Daten, oder Sonderbefehle.
 
