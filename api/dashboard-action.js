@@ -28,6 +28,41 @@ module.exports = async (req, res) => {
       return res.status(200).json({ success: true });
     }
 
+    if (action === "toggle_training_day") {
+      const { date } = req.body;
+      if (!date) return res.status(400).json({ error: "date fehlt" });
+
+      const checkRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/training_days?logged_at=eq.${date}`, {
+        headers: {
+          apikey: process.env.SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        },
+      });
+      const existing = checkRes.ok ? await checkRes.json() : [];
+
+      if (existing.length > 0) {
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/training_days?logged_at=eq.${date}`, {
+          method: "DELETE",
+          headers: {
+            apikey: process.env.SUPABASE_SECRET_KEY,
+            Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+          },
+        });
+        return res.status(200).json({ success: true, trained: false });
+      } else {
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/training_days`, {
+          method: "POST",
+          headers: {
+            apikey: process.env.SUPABASE_SECRET_KEY,
+            Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ logged_at: date }),
+        });
+        return res.status(200).json({ success: true, trained: true });
+      }
+    }
+
     return res.status(400).json({ error: "Unbekannte Aktion" });
   } catch (err) {
     console.error("Fehler bei Dashboard-Aktion:", err);
