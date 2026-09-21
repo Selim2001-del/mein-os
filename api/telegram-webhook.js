@@ -65,6 +65,22 @@ module.exports = async (req, res) => {
       return res.status(200).send("OK");
     }
 
+    // 4b. Wartet der Bot gerade auf eine Ja/Nein-Antwort (z.B. "war die Ausführung sauber?")?
+    const pending = await getPendingConfirmation(chatId);
+    if (pending) {
+      const pendingWordCount = transcript.trim().split(/\s+/).length;
+      const looksLikeYesNo = /^(ja|nein|jup|jep|joa|nö|klar|passt|genau|richtig|stimmt|korrekt|nicht wirklich|eher nicht)\b/i.test(transcript.trim()) || pendingWordCount <= 4;
+      if (looksLikeYesNo) {
+        await deletePendingConfirmation(chatId);
+        const ackPrompt = `Du hattest der Person diese Frage gestellt: "${pending.question}"\nSie hat geantwortet: "${transcript}"\nGib eine kurze (1 Satz), passende Reaktion darauf als Trainer/Coach - falls sie "ja" (saubere Ausführung) sagt, bestärke die Steigerung beim nächsten Mal; falls "nein", bestärke dass Technik vor Gewicht geht und sie beim aktuellen Gewicht bleiben sollte. Antworte NUR mit dem einen Satz.`;
+        const ack = await callClaude(ackPrompt, transcript, 150, "claude-haiku-4-5-20251001");
+        await sendTelegramMessage(chatId, ack);
+        return res.status(200).send("OK");
+      }
+      // Nachricht sieht nicht nach einer Antwort aus -> offene Frage verwerfen und normal weiterverarbeiten
+      await deletePendingConfirmation(chatId);
+    }
+
     // 5. Ansonsten: normale Klassifizierung (Loggen / Frage / Sonderaktionen)
     const actions = await classifyWithClaude(transcript);
     const results = [];
@@ -97,7 +113,7 @@ module.exports = async (req, res) => {
           results.push(`✅ Gespeichert in "${action.table}"`);
 
           if (action.table === "workouts" && action.data.exercise) {
-            const feedback = await checkProgressionFeedback(action.data.exercise);
+            const feedback = await checkProgressionFeedback(action.data.exercise, chatId);
             if (feedback) results.push(`💪 ${feedback}`);
 
             const weeklyCount = await getWeeklyTrainingDayCount();
@@ -148,6 +164,9 @@ module.exports = async (req, res) => {
         } else if (action.type === "reopen_task") {
           const reopenResult = await handleReopenTask(action.description);
           results.push(`↩️ ${reopenResult}`);
+        } else if (action.type === "update_nutrition") {
+          const updateResult = await handleUpdateNutrition(action.description, action.calories_delta, action.protein_delta);
+          results.push(`✏️ ${updateResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -282,6 +301,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - nutrition_log: description, calories, protein_g
      WICHTIG: Falls die Person keine genauen Zahlen nennt (z.B. nur "Hähnchen mit Reis gegessen"), schätze calories und protein_g SELBST anhand deines Ernährungswissens für eine typische Portion. Nenne IMMER eine Zahl, nie null/leer lassen.
    - nutrition_goals: daily_calorie_target, daily_protein_target
+     WICHTIG: NUR verwenden, wenn die Person EXPLIZIT das Wort "Ziel" nutzt (z.B. "mein Ernährungsziel ist...", "neues Protein-Ziel: ..."). Eine Aussage wie "50g Protein mehr" OHNE das Wort "Ziel" bezieht sich fast immer auf eine KORREKTUR einer geloggten Mahlzeit (siehe "update_nutrition" unten), NICHT auf eine Zieländerung.
    - workouts: exercise, sets, reps, weight_kg, notes
      WICHTIG: Auch eine GROBE Aussage ohne Details zählt als Workout-Eintrag, z.B. "Pull Tag gemacht", "Training heute abgeschlossen", "war im Gym" -> exercise = kurze Beschreibung (z.B. "Pull Tag"), sets/reps/weight_kg dürfen dann leer/null bleiben. NICHT als journal_entries einordnen, nur weil keine genauen Sätze/Wiederholungen genannt wurden.
    - daily_steps: steps
@@ -315,6 +335,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten. Das umfasst auch OFFENE, GEFÜHLSBASIERTE Fragen wie "ich hab das Gefühl, ich mache keinen Progress", "läuft's finanziell besser?", "wie geht's mir eigentlich gerade" - bei solchen Fragen mehrere relevante Tabellen gleichzeitig auswählen (nicht nur eine), damit eine fundierte, ehrliche Antwort anhand der echten Daten möglich ist (z.B. bei "kein Progress"-Gefühl: body_metrics + workouts + training_goals; bei "finanziell besser"-Gefühl: debts + expenses + income + finance_snapshots + finance_goals):
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses","debts"]}
    Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung. Bis zu 5 Tabellen gleichzeitig sind erlaubt, wenn die Frage das braucht.
+   KRITISCH: "question" ist NUR zum LESEN da, kann NIEMALS etwas verändern/speichern/aktualisieren. Jede Aussage, die eine VERÄNDERUNG will (auch implizit, z.B. "mehr", "weniger", "erhöhe", "reduzier"), ist NIEMALS "question" - das muss immer "insert", "update_nutrition" oder ein anderer handelnder Typ sein, je nachdem was verändert werden soll.
 
 6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
    Format: {"type":"delete","table":"tabellenname","description":"was gelöscht werden soll, in normalen Worten"}
@@ -325,6 +346,11 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 8. "reopen_task" - die Person möchte eine bereits als erledigt markierte Aufgabe wieder als OFFEN zurückholen, z.B. "die Aufgabe X ist doch nicht erledigt, hol sie zurück", "war ein Versehen, X ist noch offen":
    Format: {"type":"reopen_task","description":"welche Aufgabe, in normalen Worten"}
+
+9. "update_nutrition" - die Person möchte einen BESTEHENDEN Ernährungs-Eintrag korrigieren (z.B. "streich 500 Kalorien von der Nuggets-Mahlzeit", "die Kartoffeln waren ohne Öl, zieh 300 Kalorien ab", "50g Protein mehr", "20g weniger Protein"):
+   Format: {"type":"update_nutrition","description":"welcher Eintrag","calories_delta":-500,"protein_delta":0}
+   KRITISCH: calories_delta und protein_delta sind VERÄNDERUNGEN (nicht neue Absolutwerte) - positiv zum Erhöhen, negativ zum Verringern. Setze protein_delta auf 0, AUSSER die Person nennt explizit auch eine Protein-Änderung. Reines Kalorien-Korrigieren (z.B. wegen Öl/Fett) darf das Protein NICHT verändern, da Fett kein Protein enthält.
+   WICHTIG: Falls die Person KEINE bestimmte Mahlzeit nennt (z.B. nur "50g Protein mehr"), setze description auf "letzte Mahlzeit" - das bedeutet: die zuletzt geloggte Mahlzeit heute. NIEMALS in so einem Fall auf journal_entries ausweichen, nur weil keine Mahlzeit genannt wurde - "letzte Mahlzeit" ist eine gültige, verständliche Beschreibung.
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -595,6 +621,58 @@ async function upsertDebt(data) {
 }
 
 // ---------- Aufgabe wieder als offen zurückholen ----------
+
+// ---------- Ernährungs-Eintrag gezielt korrigieren ----------
+
+async function handleUpdateNutrition(description, caloriesDelta, proteinDelta) {
+  // Heutige Mahlzeiten holen (neueste zuerst), damit Claude den richtigen Eintrag findet
+  const url = `${process.env.SUPABASE_URL}/rest/v1/nutrition_log?select=id,description,calories,protein_g,logged_at&logged_at=gte.${new Date().toISOString().split("T")[0]}&order=logged_at.desc`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine heutigen Mahlzeiten gefunden.`;
+  }
+
+  const matchPrompt = `Hier ist eine Liste heutiger Mahlzeiten, NEUESTE ZUERST (id + Beschreibung + Zeitpunkt):
+${JSON.stringify(rows)}
+
+Die Person möchte einen Eintrag korrigieren, beschrieben als: "${description}"
+
+Falls die Beschreibung "letzte Mahlzeit" o.ä. ist (keine spezifische Mahlzeit genannt), nimm IMMER den ERSTEN Eintrag in der Liste (das ist die neueste).
+
+Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_text": "die Beschreibung des gefundenen Eintrags oder null", "reason": "kurze Begründung"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.id) {
+    return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  const row = rows.find((r) => r.id === match.id);
+  const newCalories = Math.max(0, (row.calories || 0) + (caloriesDelta || 0));
+  const newProtein = Math.max(0, (row.protein_g || 0) + (proteinDelta || 0));
+
+  const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/nutrition_log?id=eq.${match.id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ calories: newCalories, protein_g: newProtein }),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Korrigieren (${patchRes.status}): ${await patchRes.text()}`);
+
+  return `"${match.matched_text}" korrigiert: jetzt ${newCalories} kcal, ${newProtein}g Protein (vorher ${row.calories} kcal, ${row.protein_g}g)`;
+}
 
 async function handleReopenTask(description) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/tasks?select=id,title&done=eq.true&order=created_at.desc&limit=100`;
@@ -1397,7 +1475,7 @@ async function checkBodyProgressFeedback() {
 
 // ---------- Progressions-Feedback ----------
 
-async function checkProgressionFeedback(exerciseName) {
+async function checkProgressionFeedback(exerciseName, chatId) {
   try {
     const url = `${process.env.SUPABASE_URL}/rest/v1/workouts?exercise=ilike.${encodeURIComponent(exerciseName)}&order=logged_at.desc&limit=6`;
     const res = await fetch(url, {
@@ -1422,11 +1500,55 @@ Wenn kein Anlass für eine Steigerung besteht, antworte NUR mit "weiter so wie b
 
     const userMsg = `Übung: ${exerciseName}\nVerlauf: ${JSON.stringify(history)}\nTrainingsplan: ${planText}`;
 
-    return await callClaude(systemPrompt, userMsg, 200, "claude-haiku-4-5-20251001");
+    const feedback = await callClaude(systemPrompt, userMsg, 200, "claude-haiku-4-5-20251001");
+
+    // Falls es eine echte Frage ist (nicht nur "weiter so wie bisher"), merken, dass eine Antwort erwartet wird
+    if (feedback && !/weiter so wie bisher/i.test(feedback) && chatId) {
+      await savePendingConfirmation(chatId, feedback);
+    }
+
+    return feedback;
   } catch (err) {
     console.error("Fehler beim Progressions-Feedback:", err);
     return null; // Feedback ist ein Bonus, darf das Loggen nicht blockieren
   }
+}
+
+// ---------- Offene Fragen merken (z.B. "war die Ausführung sauber?") ----------
+
+async function savePendingConfirmation(chatId, question) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_confirmations?on_conflict=chat_id`, {
+    method: "POST",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates",
+    },
+    body: JSON.stringify({ chat_id: chatId, question }),
+  });
+}
+
+async function getPendingConfirmation(chatId) {
+  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_confirmations?chat_id=eq.${chatId}`, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows && rows[0] ? rows[0] : null;
+}
+
+async function deletePendingConfirmation(chatId) {
+  await fetch(`${process.env.SUPABASE_URL}/rest/v1/pending_confirmations?chat_id=eq.${chatId}`, {
+    method: "DELETE",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
 }
 
 // ---------- Trainingsplan erstellen ----------
