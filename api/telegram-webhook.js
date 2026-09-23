@@ -98,6 +98,11 @@ module.exports = async (req, res) => {
             results.push(`✅ Budget gesetzt für "${action.data.category}"`);
             continue;
           }
+          if (action.table === "finance_snapshots") {
+            const snapshot = await upsertFinanceSnapshot(action.data);
+            results.push(`✅ Vermögens-Snapshot: ${snapshot.liquide_mittel}€ liquide, ${snapshot.ruecklagen}€ Rücklagen, ${snapshot.vermoegen_gesamt}€ Gesamtvermögen`);
+            continue;
+          }
           if (action.table === "sales_kpis") {
             const todayRow = await accumulateSalesKpis(action.data);
             const feedback = await checkSalesFeedback();
@@ -167,6 +172,12 @@ module.exports = async (req, res) => {
         } else if (action.type === "update_nutrition") {
           const updateResult = await handleUpdateNutrition(action.description, action.calories_delta, action.protein_delta);
           results.push(`✏️ ${updateResult}`);
+        } else if (action.type === "update_debt") {
+          const debtResult = await handleUpdateDebt(action.description, action.paid_off_completely, action.paid_amount);
+          results.push(`💰 ${debtResult}`);
+        } else if (action.type === "merge_tasks") {
+          const mergeResult = await handleMergeTasks(action.description, action.combined_title);
+          results.push(`🔀 ${mergeResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -320,6 +331,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
      Hinweis: Bei debts reicht der AKTUELLE Rest-Betrag - der Bot merkt sich beim ersten Mal automatisch den Ausgangspunkt und trackt danach den Fortschritt.
    - finance_goals: title, target_amount, target_date
    - finance_snapshots: liquide_mittel, ruecklagen, vermoegen_gesamt
+     Hinweis: Nenne nur die Felder, die die Person tatsächlich sagt (z.B. nur liquide_mittel) - fehlende Felder werden automatisch vom letzten bekannten Stand übernommen bzw. automatisch berechnet. Erfinde KEINE Werte für Felder, die nicht genannt wurden.
    - journal_entries: raw_text, summary, mood
    Format: {"type":"insert","table":"...","data":{...}}
 
@@ -351,6 +363,13 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    Format: {"type":"update_nutrition","description":"welcher Eintrag","calories_delta":-500,"protein_delta":0}
    KRITISCH: calories_delta und protein_delta sind VERÄNDERUNGEN (nicht neue Absolutwerte) - positiv zum Erhöhen, negativ zum Verringern. Setze protein_delta auf 0, AUSSER die Person nennt explizit auch eine Protein-Änderung. Reines Kalorien-Korrigieren (z.B. wegen Öl/Fett) darf das Protein NICHT verändern, da Fett kein Protein enthält.
    WICHTIG: Falls die Person KEINE bestimmte Mahlzeit nennt (z.B. nur "50g Protein mehr"), setze description auf "letzte Mahlzeit" - das bedeutet: die zuletzt geloggte Mahlzeit heute. NIEMALS in so einem Fall auf journal_entries ausweichen, nur weil keine Mahlzeit genannt wurde - "letzte Mahlzeit" ist eine gültige, verständliche Beschreibung.
+
+10. "update_debt" - die Person hat eine BESTEHENDE Schuld (teilweise oder vollständig) ABBEZAHLT, z.B. "GKV ist jetzt komplett abbezahlt", "ich hab 100 Euro auf die Rentenversicherung abbezahlt", "Metahan ist beglichen":
+    Format: {"type":"update_debt","description":"welche Schuld","paid_off_completely":true} ODER {"type":"update_debt","description":"welche Schuld","paid_amount":100}
+    NIEMALS als normales "insert" in debts behandeln, wenn es um eine bereits bestehende Schuld geht, die abbezahlt wurde - das würde eine neue/doppelte Schuld anlegen statt die bestehende zu reduzieren.
+
+11. "merge_tasks" - die Person möchte mehrere bestehende Aufgaben zu EINER zusammenfassen, z.B. "nimm die letzten drei Aufgaben und mach eine draus", "fass X, Y und Z zu einer Aufgabe zusammen":
+    Format: {"type":"merge_tasks","description":"welche Aufgaben zusammengeführt werden sollen, in normalen Worten","combined_title":"neuer, zusammengefasster Aufgaben-Titel"}
 
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
@@ -559,6 +578,39 @@ async function handleCheckinAnswer(chatId, transcript, session) {
 
 // ---------- Ausgaben-Budgets: Upsert per Kategorie ----------
 
+// ---------- Vermögens-Snapshot: fehlende Felder übernehmen, Vermögen automatisch berechnen ----------
+
+async function upsertFinanceSnapshot(data) {
+  // Letzten bekannten Snapshot holen, um nicht genannte Felder zu übernehmen
+  const lastRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/finance_snapshots?order=logged_at.desc&limit=1`, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const lastRows = lastRes.ok ? await lastRes.json() : [];
+  const last = lastRows[0] || {};
+
+  const liquide = data.liquide_mittel != null ? data.liquide_mittel : (last.liquide_mittel || 0);
+  const ruecklagen = data.ruecklagen != null ? data.ruecklagen : (last.ruecklagen || 0);
+
+  // Aktuelle Schulden-Summe holen für automatische Vermögensberechnung
+  const debtsRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/debts?select=restbetrag`, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  const debtsRows = debtsRes.ok ? await debtsRes.json() : [];
+  const totalDebt = debtsRows.reduce((s, d) => s + (d.restbetrag || 0), 0);
+
+  const vermoegen = data.vermoegen_gesamt != null ? data.vermoegen_gesamt : liquide + ruecklagen - totalDebt;
+
+  const finalData = { liquide_mittel: liquide, ruecklagen, vermoegen_gesamt: vermoegen };
+  await saveToSupabase("finance_snapshots", finalData);
+  return finalData;
+}
+
 async function upsertExpenseBudget(data) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/expense_budgets?category=ilike.${encodeURIComponent(data.category)}`;
   const res = await fetch(url, {
@@ -623,6 +675,102 @@ async function upsertDebt(data) {
 // ---------- Aufgabe wieder als offen zurückholen ----------
 
 // ---------- Ernährungs-Eintrag gezielt korrigieren ----------
+
+// ---------- Schuld als (teilweise) abbezahlt markieren ----------
+
+async function handleUpdateDebt(description, paidOffCompletely, paidAmount) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/debts?select=id,name,restbetrag,original_betrag`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine Schulden hinterlegt.`;
+  }
+
+  const matchPrompt = `Hier ist eine Liste bestehender Schulden (id + Name):
+${JSON.stringify(rows)}
+
+Die Person hat eine davon abbezahlt, beschrieben als: "${description}"
+
+Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_name": "der Name der gefundenen Schuld oder null", "reason": "kurze Begründung"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.id) {
+    return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  const row = rows.find((r) => r.id === match.id);
+  const newRestbetrag = paidOffCompletely ? 0 : Math.max(0, (row.restbetrag || 0) - (paidAmount || 0));
+
+  const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/debts?id=eq.${match.id}`, {
+    method: "PATCH",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ restbetrag: newRestbetrag }),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren (${patchRes.status}): ${await patchRes.text()}`);
+
+  return newRestbetrag === 0
+    ? `"${match.matched_name}" ist jetzt komplett abbezahlt! 🎉`
+    : `"${match.matched_name}": noch ${newRestbetrag}€ offen (vorher ${row.restbetrag}€)`;
+}
+
+// ---------- Mehrere Aufgaben zu einer zusammenführen ----------
+
+async function handleMergeTasks(description, combinedTitle) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/tasks?select=id,title&done=eq.false&order=created_at.desc&limit=100`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine offenen Aufgaben vorhanden.`;
+  }
+
+  const matchPrompt = `Hier ist eine Liste offener Aufgaben (id + Titel), NEUESTE ZUERST:
+${JSON.stringify(rows)}
+
+Die Person möchte mehrere davon zusammenführen, beschrieben als: "${description}"
+
+Finde ALLE passenden Einträge (z.B. bei "die letzten drei" die drei neuesten aus der Liste). Antworte NUR mit validem JSON, ohne Markdown: {"ids": ["id1","id2","id3"], "matched_titles": ["...", "...", "..."], "reason": "kurze Begründung"}`;
+
+  const matchText = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+  const match = parseJson(matchText);
+
+  if (!match.ids || match.ids.length === 0) {
+    return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+  }
+
+  for (const id of match.ids) {
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/tasks?id=eq.${id}`, {
+      method: "DELETE",
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+  }
+
+  await saveToSupabase("tasks", { title: combinedTitle });
+
+  return `${match.ids.length} Aufgaben zusammengeführt zu: "${combinedTitle}"`;
+}
 
 async function handleUpdateNutrition(description, caloriesDelta, proteinDelta) {
   // Heutige Mahlzeiten holen (neueste zuerst), damit Claude den richtigen Eintrag findet
@@ -1645,4 +1793,3 @@ async function saveToSupabase(table, data) {
     const errorText = await res.text();
     throw new Error(`Supabase-Fehler (${res.status}): ${errorText}`);
   }
-}
