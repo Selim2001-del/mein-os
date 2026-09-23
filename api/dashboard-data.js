@@ -55,10 +55,10 @@ module.exports = async (req, res) => {
       sb("finance_goals"),
       sb("finance_snapshots?order=logged_at.desc&limit=30"),
       sb("expense_budgets"),
-      sb(`workouts?select=logged_at&logged_at=gte.${daysAgoIso(7)}`),
-      sb(`training_days?logged_at=gte.${daysAgoIso(7)}`),
-      sb(`daily_steps?logged_at=gte.${daysAgoIso(7)}`),
-      sb(`sales_kpis?logged_at=gte.${daysAgoIso(35)}`),
+      sb(`workouts?select=logged_at&logged_at=gte.${daysAgoIso(90)}`),
+      sb(`training_days?logged_at=gte.${daysAgoIso(90)}`),
+      sb(`daily_steps?logged_at=gte.${daysAgoIso(90)}`),
+      sb(`sales_kpis?logged_at=gte.${daysAgoIso(120)}`),
       sb("sales_goals?order=updated_at.desc&limit=1"),
     ]);
 
