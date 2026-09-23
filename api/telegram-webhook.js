@@ -1793,3 +1793,4 @@ async function saveToSupabase(table, data) {
     const errorText = await res.text();
     throw new Error(`Supabase-Fehler (${res.status}): ${errorText}`);
   }
+}
