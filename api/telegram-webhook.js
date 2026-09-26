@@ -184,6 +184,9 @@ module.exports = async (req, res) => {
         } else if (action.type === "merge_tasks") {
           const mergeResult = await handleMergeTasks(action.description, action.combined_title);
           results.push(`🔀 ${mergeResult}`);
+        } else if (action.type === "set_task_size") {
+          const sizeResult = await handleSetTaskSize(action.description, action.size);
+          results.push(`${action.size === "quick" ? "⚡" : "🧱"} ${sizeResult}`);
         }
       } catch (err) {
         console.error(`Fehler bei Aktion ${JSON.stringify(action)}:`, err);
@@ -314,7 +317,11 @@ Du bekommst eine gesprochene Notiz einer Person. Sie kann mehrere unabhängige T
 Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 1. "insert" - ein normaler Fakt für eine dieser Tabellen:
-   - tasks: title, category, priority, due_date
+   - tasks: title, category, priority, due_date, size
+     Hinweis "size": versuche IMMER anhand der Formulierung zu erkennen, ob es eine "quick" Aufgabe (unter 1 Stunde) oder eine "big" Aufgabe (2+ Stunden) ist, und setze das Feld entsprechend:
+       - "quick": Signalwörter wie "geht schnell", "geht fix", "dauert nicht lange", "kurz", "in 10/20/30 Minuten", "kleine Sache"
+       - "big": Signalwörter wie "brauch dafür Zeit", "muss ich mir Zeit nehmen", "dauert lange", "größeres Projekt", "über 2 Stunden"
+     Wenn KEIN solches Signalwort erkennbar ist, "size" auf null lassen (nicht raten).
    - nutrition_log: description, calories, protein_g
      WICHTIG: Falls die Person keine genauen Zahlen nennt (z.B. nur "Hähnchen mit Reis gegessen"), schätze calories und protein_g SELBST anhand deines Ernährungswissens für eine typische Portion. Nenne IMMER eine Zahl, nie null/leer lassen.
    - nutrition_goals: daily_calorie_target, daily_protein_target
@@ -326,6 +333,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - sales_kpis: cold_calls, vz_blocks, entscheider_erreicht, entscheider_gepitcht, termine_gelegt, sets_im_kalender, no_show, gekommen, sales_call_terminiert, logged_at
      Hinweis: Vertriebs-Kennzahlen für den Job. Nur die genannten Felder ausfüllen, Rest weglassen (nicht 0 erfinden). Werte addieren sich automatisch zum Tageswert, falls mehrfach am Tag gemeldet.
      KRITISCH - Rückwirkendes Eintragen: Die Person kann auch Zahlen für VERGANGENE Tage nachtragen, z.B. "gestern hab ich auch nochmal 130 Calls gemacht", "am Montag hatte ich 40 Calls". Erkenne solche Zeitbezüge (gestern, vorgestern, Wochentagsnamen, explizite Daten) und berechne anhand von "Heutiges Datum" das korrekte Datum als "logged_at" (Format YYYY-MM-DD). OHNE erkennbaren Zeitbezug ("ich hab 100 Calls gemacht") IMMER logged_at auf das heutige Datum setzen - NIEMALS logged_at weglassen, sonst geht der Eintrag auf das falsche Datum.
+     KRITISCH - Massen-Nachtragen mehrerer Tage in EINER Nachricht: Die Person trägt evtl. mehrere Wochen/Monate am Stück nach, im Muster "Datum, dann Zahlen, nächstes Datum, dann Zahlen, ...", z.B. "25. August: 100 Calls, 3 Termine. 26. August: 80 Calls, 1 Termin. 27. August: keine Calls gemacht." Erkenne JEDEN Datums-Block als EIGENE separate "insert"-Aktion mit dem jeweils passenden "logged_at" - NIEMALS mehrere Tage in eine Aktion zusammenfassen, auch wenn die Nachricht sehr lang ist mit vielen Daten hintereinander.
    - sales_goals: daily_cold_call_target, daily_termine_target
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
@@ -379,6 +387,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 11. "merge_tasks" - die Person möchte mehrere bestehende Aufgaben zu EINER zusammenfassen, z.B. "nimm die letzten drei Aufgaben und mach eine draus", "fass X, Y und Z zu einer Aufgabe zusammen":
     Format: {"type":"merge_tasks","description":"welche Aufgaben zusammengeführt werden sollen, in normalen Worten","combined_title":"neuer, zusammengefasster Aufgaben-Titel"}
 
+12. "set_task_size" - die Person hat VORHER schon eine Aufgabe genannt (in dieser oder einer früheren Nachricht) und sagt JETZT NACHTRÄGLICH, wie schnell/aufwändig sie ist, OHNE dabei eine neue Aufgabe zu nennen - z.B. "geht schnell", "das dauert nicht lange", "dafür muss ich mir Zeit nehmen". Bezieht sich die Aussage auf keine bestimmte Aufgabe, nutze description "letzte Aufgabe" (= die zuletzt angelegte offene Aufgabe):
+    Format: {"type":"set_task_size","description":"welche Aufgabe, oder 'letzte Aufgabe'","size":"quick"|"big"}
+
 Antworte NUR mit einem validen JSON-ARRAY dieser Aktionen, ohne Erklärung, ohne Markdown-Codeblock. Wenn nur EIN Teil erkannt wird, trotzdem ein Array mit einem Element zurückgeben.
 
 Wenn du unsicher bist oder es eine freie Reflexion ist, nutze "insert" mit table "journal_entries".
@@ -401,9 +412,13 @@ Ausgabe: [{"type":"question","text":"Wie sieht Tag 4 (Pull) des aktuellen Traini
 
 Beispiel (rückwirkender Sales-Eintrag, angenommen heute ist 2026-09-26):
 Eingabe: "Ich hab heute 100 Calls gemacht, und gestern hab ich auch nochmal 130 Calls gemacht"
-Ausgabe: [{"type":"insert","table":"sales_kpis","data":{"cold_calls":100,"logged_at":"2026-09-26"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":130,"logged_at":"2026-09-25"}}]`;
+Ausgabe: [{"type":"insert","table":"sales_kpis","data":{"cold_calls":100,"logged_at":"2026-09-26"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":130,"logged_at":"2026-09-25"}}]
 
-  const text = await callClaude(systemPrompt, transcript, 4000, "claude-sonnet-5");
+Beispiel (Massen-Nachtragen mehrerer Tage in einer Nachricht):
+Eingabe: "25. August: 100 Calls, 3 Termine gelegt. 26. August: 80 Calls, 1 Termin. 27. August keine Calls gemacht, war krank."
+Ausgabe: [{"type":"insert","table":"sales_kpis","data":{"cold_calls":100,"termine_gelegt":3,"logged_at":"2026-08-25"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":80,"termine_gelegt":1,"logged_at":"2026-08-26"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":0,"logged_at":"2026-08-27"}}]`;
+
+  const text = await callClaude(systemPrompt, transcript, 8000, "claude-sonnet-5");
   const parsed = parseJson(text);
   const actions = Array.isArray(parsed) ? parsed : [parsed];
   console.log("Klassifiziert als:", JSON.stringify(actions));
@@ -879,6 +894,59 @@ Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne
   if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Zurückholen (${patchRes.status}): ${await patchRes.text()}`);
 
   return `Aufgabe wieder offen: "${match.matched_text}"`;
+}
+
+// ---------- Aufgaben-Größe (Quick vs. Big) nachträglich setzen ----------
+
+async function handleSetTaskSize(description, size) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/tasks?select=id,title&done=eq.false&order=created_at.desc&limit=100`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) throw new Error(`Supabase-Fehler beim Laden (${res.status}): ${await res.text()}`);
+  const rows = await res.json();
+
+  if (!rows || rows.length === 0) {
+    return `Keine offenen Aufgaben vorhanden.`;
+  }
+
+  let matchId, matchText;
+
+  if (/letzte aufgabe/i.test(description)) {
+    matchId = rows[0].id;
+    matchText = rows[0].title;
+  } else {
+    const matchPrompt = `Hier ist eine Liste offener Aufgaben (id + Titel), neueste zuerst:
+${JSON.stringify(rows)}
+
+Die Person meint eine davon, beschrieben als: "${description}"
+
+Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_text": "der Titel des gefundenen Eintrags oder null", "reason": "kurze Begründung, v.a. falls nichts eindeutig passt"}`;
+
+    const matchTextRes = await callClaude(matchPrompt, description, 500, "claude-haiku-4-5-20251001");
+    const match = parseJson(matchTextRes);
+    if (!match.id) {
+      return `Nichts eindeutig gefunden zu "${description}": ${match.reason || "kein eindeutiger Treffer"}`;
+    }
+    matchId = match.id;
+    matchText = match.matched_text;
+  }
+
+  const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/tasks?id=eq.${matchId}`, {
+    method: "PATCH",
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ size }),
+  });
+  if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Setzen der Aufgaben-Größe (${patchRes.status}): ${await patchRes.text()}`);
+
+  return `"${matchText}" markiert als ${size === "quick" ? "Quick-Task ⚡" : "große Aufgabe 🧱"}`;
 }
 
 // ---------- Aufgabe als erledigt markieren ----------
