@@ -1,0 +1,52 @@
+// ---------- Wöchentliche Erinnerung: Gewicht + Fortschrittsfoto ----------
+// Wird per Vercel Cron einmal pro Woche aufgerufen (siehe vercel.json) und schickt
+// eine Telegram-Nachricht, die aktiv nach Gewicht und einem Fortschrittsfoto fragt -
+// das hat der Bot bisher nie von sich aus eingefordert.
+
+module.exports = async (req, res) => {
+  if (process.env.CRON_SECRET) {
+    const auth = req.headers.authorization || "";
+    if (auth !== `Bearer ${process.env.CRON_SECRET}`) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+  }
+
+  try {
+    const chatId = await getStoredChatId();
+    if (!chatId) {
+      res.status(200).json({ ok: true, note: "Keine Chat-ID bekannt, noch keine Nachricht geschickt" });
+      return;
+    }
+
+    const text = `📸 Zeit für dein wöchentliches Update!\n\nSchick mir dein aktuelles Gewicht (z.B. "82,3 kg") und wenn du magst ein Fortschrittsfoto - dann kann ich den Verlauf und deine KFA-Schätzung sauber weiterführen.`;
+    await sendTelegramMessage(chatId, text);
+
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("Progress-Reminder-Fehler:", err);
+    res.status(500).json({ error: String(err) });
+  }
+};
+
+async function getStoredChatId() {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/bot_settings?id=eq.1&select=chat_id`;
+  const res = await fetch(url, {
+    headers: {
+      apikey: process.env.SUPABASE_SECRET_KEY,
+      Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+    },
+  });
+  if (!res.ok) return null;
+  const rows = await res.json();
+  return rows && rows[0] ? rows[0].chat_id : null;
+}
+
+async function sendTelegramMessage(chatId, text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+}
