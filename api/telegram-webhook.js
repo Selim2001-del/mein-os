@@ -104,14 +104,20 @@ module.exports = async (req, res) => {
             continue;
           }
           if (action.table === "sales_kpis") {
-            const todayRow = await accumulateSalesKpis(action.data);
-            const feedback = await checkSalesFeedback();
-            results.push(`✅ Gespeichert in "sales_kpis"`);
+            const todayStr = new Date().toISOString().split("T")[0];
+            const savedRow = await accumulateSalesKpis(action.data);
+            const isToday = savedRow.logged_at === todayStr;
 
-            const streakMsg = await checkSalesStreak(todayRow);
-            if (streakMsg) results.push(streakMsg);
-
-            if (feedback) results.push(`📈 ${feedback}`);
+            if (isToday) {
+              results.push(`✅ Gespeichert in "sales_kpis"`);
+              const streakMsg = await checkSalesStreak(savedRow);
+              if (streakMsg) results.push(streakMsg);
+              const feedback = await checkSalesFeedback();
+              if (feedback) results.push(`📈 ${feedback}`);
+            } else {
+              const dateLabel = new Date(savedRow.logged_at + "T00:00:00Z").toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+              results.push(`✅ Rückwirkend gespeichert für ${dateLabel}`);
+            }
             continue;
           }
           await saveToSupabase(action.table, action.data);
@@ -317,8 +323,9 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
      WICHTIG: Auch eine GROBE Aussage ohne Details zählt als Workout-Eintrag, z.B. "Pull Tag gemacht", "Training heute abgeschlossen", "war im Gym" -> exercise = kurze Beschreibung (z.B. "Pull Tag"), sets/reps/weight_kg dürfen dann leer/null bleiben. NICHT als journal_entries einordnen, nur weil keine genauen Sätze/Wiederholungen genannt wurden.
    - daily_steps: steps
      Hinweis: logged_at ist automatisch heute, außer die Person nennt explizit ein anderes Datum.
-   - sales_kpis: cold_calls, vz_blocks, entscheider_erreicht, entscheider_gepitcht, termine_gelegt, sets_im_kalender, no_show, gekommen, sales_call_terminiert
+   - sales_kpis: cold_calls, vz_blocks, entscheider_erreicht, entscheider_gepitcht, termine_gelegt, sets_im_kalender, no_show, gekommen, sales_call_terminiert, logged_at
      Hinweis: Vertriebs-Kennzahlen für den Job. Nur die genannten Felder ausfüllen, Rest weglassen (nicht 0 erfinden). Werte addieren sich automatisch zum Tageswert, falls mehrfach am Tag gemeldet.
+     KRITISCH - Rückwirkendes Eintragen: Die Person kann auch Zahlen für VERGANGENE Tage nachtragen, z.B. "gestern hab ich auch nochmal 130 Calls gemacht", "am Montag hatte ich 40 Calls". Erkenne solche Zeitbezüge (gestern, vorgestern, Wochentagsnamen, explizite Daten) und berechne anhand von "Heutiges Datum" das korrekte Datum als "logged_at" (Format YYYY-MM-DD). OHNE erkennbaren Zeitbezug ("ich hab 100 Calls gemacht") IMMER logged_at auf das heutige Datum setzen - NIEMALS logged_at weglassen, sonst geht der Eintrag auf das falsche Datum.
    - sales_goals: daily_cold_call_target, daily_termine_target
    - body_metrics: weight_kg, body_fat_percent
    - training_goals: target_weight_kg, target_body_fat_percent, target_date, notes
@@ -390,7 +397,11 @@ Ausgabe: [{"type":"question","text":"Was ist Übung 5 im Trainingsplan?","releva
 
 Beispiel:
 Eingabe: "Zeig mir den Pull-Tag für Tag 4 des Trainings diese Woche"
-Ausgabe: [{"type":"question","text":"Wie sieht Tag 4 (Pull) des aktuellen Trainingsplans aus?","relevant_tables":["training_plan"]}]`;
+Ausgabe: [{"type":"question","text":"Wie sieht Tag 4 (Pull) des aktuellen Trainingsplans aus?","relevant_tables":["training_plan"]}]
+
+Beispiel (rückwirkender Sales-Eintrag, angenommen heute ist 2026-09-26):
+Eingabe: "Ich hab heute 100 Calls gemacht, und gestern hab ich auch nochmal 130 Calls gemacht"
+Ausgabe: [{"type":"insert","table":"sales_kpis","data":{"cold_calls":100,"logged_at":"2026-09-26"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":130,"logged_at":"2026-09-25"}}]`;
 
   const text = await callClaude(systemPrompt, transcript, 4000, "claude-sonnet-5");
   const parsed = parseJson(text);
@@ -1037,8 +1048,8 @@ ${JSON.stringify(lifeProfile)}`;
 // ---------- Sales-KPIs: Tages-Aufsummierung + Wochenvergleich ----------
 
 async function accumulateSalesKpis(data) {
-  const todayStr = new Date().toISOString().split("T")[0];
-  const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=eq.${todayStr}`;
+  const targetDate = data.logged_at || new Date().toISOString().split("T")[0];
+  const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=eq.${targetDate}`;
   const res = await fetch(url, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
@@ -1065,11 +1076,11 @@ async function accumulateSalesKpis(data) {
       body: JSON.stringify(merged),
     });
     if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren der Sales-KPIs (${patchRes.status}): ${await patchRes.text()}`);
-    return { logged_at: todayStr, ...merged };
+    return { logged_at: targetDate, ...merged };
   } else {
-    await saveToSupabase("sales_kpis", data);
+    await saveToSupabase("sales_kpis", { ...data, logged_at: targetDate });
     const zeroed = Object.fromEntries(fields.map((f) => [f, data[f] || 0]));
-    return { logged_at: todayStr, ...zeroed };
+    return { logged_at: targetDate, ...zeroed };
   }
 }
 
