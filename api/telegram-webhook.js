@@ -341,17 +341,18 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 3. "trait_checkin" - die Person bewertet eine Charaktereigenschaft mit einer Schulnote (1=sehr gut, 6=ungenügend):
    Format: {"type":"trait_checkin","trait_name":"...","note":1-6,"notes":"optionaler Kontext"}
 
-4. "generate_plan" - die Person bittet ausdrücklich darum, einen (neuen) Trainingsplan zu erstellen/anzupassen. Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
+4. "generate_plan" - die Person bittet ausdrücklich darum, einen NEUEN Trainingsplan zu ERSTELLEN oder einen bestehenden fundamental zu ÄNDERN/ANPASSEN (Wörter wie "erstell mir einen neuen Trainingsplan", "mach den Plan neu", "pass meinen Plan an, mehr Fokus auf Beine"). Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
    Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
+   KRITISCH: Wenn die Person nur etwas aus dem BESTEHENDEN Plan sehen/wissen will (z.B. "zeig mir Tag 4", "was ist mein Pull Tag diese Woche", "wie sieht mein Trainingsplan aus", "welche Übungen hab ich heute"), ist das IMMER "question" mit relevant_tables ["training_plan"] - NIEMALS "generate_plan". "generate_plan" erzeugt einen KOMPLETT NEUEN Plan und darf nur bei einem echten, expliziten Erstellen/Ändern-Wunsch ausgelöst werden.
 
 5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten. Das umfasst auch OFFENE, GEFÜHLSBASIERTE Fragen wie "ich hab das Gefühl, ich mache keinen Progress", "läuft's finanziell besser?", "wie geht's mir eigentlich gerade" - bei solchen Fragen mehrere relevante Tabellen gleichzeitig auswählen (nicht nur eine), damit eine fundierte, ehrliche Antwort anhand der echten Daten möglich ist (z.B. bei "kein Progress"-Gefühl: body_metrics + workouts + training_goals; bei "finanziell besser"-Gefühl: debts + expenses + income + finance_snapshots + finance_goals):
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses","debts"]}
    Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung. Bis zu 5 Tabellen gleichzeitig sind erlaubt, wenn die Frage das braucht.
    KRITISCH: "question" ist NUR zum LESEN da, kann NIEMALS etwas verändern/speichern/aktualisieren. Jede Aussage, die eine VERÄNDERUNG will (auch implizit, z.B. "mehr", "weniger", "erhöhe", "reduzier"), ist NIEMALS "question" - das muss immer "insert", "update_nutrition" oder ein anderer handelnder Typ sein, je nachdem was verändert werden soll.
 
-6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute"):
+6. "delete" - die Person möchte einen bestehenden Eintrag löschen (z.B. "lösch die Aufgabe zur Steuerzahlung", "entfern den Workout-Eintrag Bankdrücken von heute", "lösch den Trainingsplan, den du erstellt hast"):
    Format: {"type":"delete","table":"tabellenname","description":"was gelöscht werden soll, in normalen Worten"}
-   Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits, personality_checkins
+   Unterstützte Tabellen dafür: tasks, expenses, fixed_costs, debts, finance_goals, journal_entries, workouts, nutrition_log, income, personality_traits, personality_checkins, training_plan
 
 7. "complete_task" - die Person hat eine Aufgabe erledigt und möchte sie als "fertig" markieren (NICHT löschen), z.B. "ich hab die Aufgabe mit meiner Schwester erledigt", "Steuerzahlung ist fertig":
    Format: {"type":"complete_task","description":"welche Aufgabe, in normalen Worten"}
@@ -385,7 +386,11 @@ WICHTIG: Jede Frage nach bereits gespeicherten/bekannten Infos (z.B. "was ist Ü
 
 Beispiel:
 Eingabe: "Was ist denn jetzt Übung 5 in meinem neuen Trainingsplan?"
-Ausgabe: [{"type":"question","text":"Was ist Übung 5 im Trainingsplan?","relevant_tables":["training_plan"]}]`;
+Ausgabe: [{"type":"question","text":"Was ist Übung 5 im Trainingsplan?","relevant_tables":["training_plan"]}]
+
+Beispiel:
+Eingabe: "Zeig mir den Pull-Tag für Tag 4 des Trainings diese Woche"
+Ausgabe: [{"type":"question","text":"Wie sieht Tag 4 (Pull) des aktuellen Trainingsplans aus?","relevant_tables":["training_plan"]}]`;
 
   const text = await callClaude(systemPrompt, transcript, 4000, "claude-sonnet-5");
   const parsed = parseJson(text);
@@ -924,6 +929,7 @@ async function handleDelete(table, description) {
     nutrition_log: "description",
     income: "source",
     personality_traits: "name",
+    training_plan: "plan_text",
   };
 
   let rows, column;
@@ -949,7 +955,8 @@ async function handleDelete(table, description) {
     if (!column) {
       return `Löschen aus "${table}" wird nicht unterstützt.`;
     }
-    const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?select=id,${column}&limit=100`;
+    const extraFilter = table === "training_plan" ? "&active=eq.true&order=created_at.desc" : "";
+    const url = `${process.env.SUPABASE_URL}/rest/v1/${table}?select=id,${column}&limit=100${extraFilter}`;
     const res = await fetch(url, {
       headers: {
         apikey: process.env.SUPABASE_SECRET_KEY,
