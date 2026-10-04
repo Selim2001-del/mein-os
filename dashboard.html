@@ -575,6 +575,7 @@
   .va-msg.user { align-self: flex-end; border: 1px solid rgba(94,242,160,.4); background: rgba(94,242,160,.07); border-bottom-right-radius: 5px; }
   .va-msg.assistant { align-self: flex-start; border: 1px solid var(--border); background: rgba(255,255,255,.03); border-bottom-left-radius: 5px; }
   .va-msg.err { border-color: rgba(232,168,85,.5); color: #E8A855; }
+  .va-msg b { font-weight: 600; }
   .va-msg time { display: block; margin-top: 5px; font-family: var(--mono); font-size: 9px; letter-spacing: 1px; color: var(--text-dim); }
   .va-dots span { display: inline-block; width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: var(--accent); animation: vaDots 1.2s infinite; }
   .va-dots span:nth-child(2) { animation-delay: .2s; } .va-dots span:nth-child(3) { animation-delay: .4s; }
@@ -2135,6 +2136,14 @@ function vaStatus(text, ms) {
   if (text && ms) VA.statusTimer = setTimeout(() => el.classList.remove("show"), ms);
 }
 
+// Text sicher ausgeben; **fett** und *kursiv* aus den Antworten werden zu echter Auszeichnung
+function vaFmt(text) {
+  return esc(text)
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, "$1<i>$2</i>")
+    .replace(/^#{1,4}\s+(.+)$/gm, "<b>$1</b>");
+}
+
 function vaRender() {
   const box = document.getElementById("vaMsgs");
   if (!VA.msgs.length) {
@@ -2147,8 +2156,8 @@ function vaRender() {
     const day = d.toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
     const head = day !== lastDay ? `<div class="va-day">${day.toUpperCase()}</div>` : "";
     lastDay = day;
-    const body = m.pending ? `<span class="va-dots"><span></span><span></span><span></span></span>` : esc(m.text);
-    const time = m.pending ? "" : `<time>${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}</time>`;
+    const body = m.pending ? `<span class="va-dots"><span></span><span></span><span></span></span>` : vaFmt(m.text);
+    const time = m.pending ? "" : `<time>${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}${m.source === "telegram" ? " · TELEGRAM" : ""}</time>`;
     return `${head}<div class="va-msg ${m.role}${m.err ? " err" : ""}">${body}${time}</div>`;
   }).join("");
   box.scrollTop = box.scrollHeight;
