@@ -2,7 +2,7 @@
 // Logik wie der Telegram-Bot und liefert die Antworten zurück. Geschützt durchs Dashboard-Passwort.
 // Der Chatverlauf liegt in der Supabase-Tabelle chat_messages.
 
-const { processWebMessage } = require("./telegram-webhook.js");
+const { processWebMessage, processWebPhoto } = require("./telegram-webhook.js");
 
 const MAX_AUDIO_BASE64 = 4_000_000; // ca. 3 MB Audio, reicht für mehrere Minuten Sprache
 
@@ -11,7 +11,7 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: "Nur POST erlaubt" });
   }
 
-  const { password, action, audio, mime, text } = req.body || {};
+  const { password, action, audio, mime, text, photo, caption } = req.body || {};
   if (!password || password !== process.env.DASHBOARD_PASSWORD) {
     return res.status(401).json({ error: "Falsches Passwort" });
   }
@@ -20,6 +20,21 @@ module.exports = async (req, res) => {
     if (action === "history") {
       const rows = await sb("chat_messages?select=id,created_at,role,text,source&order=created_at.desc&limit=150");
       return res.status(200).json({ messages: rows.reverse() });
+    }
+
+    // Fortschrittsfoto (im Browser schon verkleinert, JPEG als Base64)
+    if (photo) {
+      if (typeof photo !== "string" || photo.length > MAX_AUDIO_BASE64) {
+        return res.status(413).json({ error: "Foto zu groß." });
+      }
+      const { replies } = await processWebPhoto({ imageBuffer: Buffer.from(photo, "base64"), caption });
+      const photoReply = replies.join("\n\n") || "Fortschrittsfoto gespeichert.";
+      const t = Date.now();
+      await saveMessages([
+        { role: "user", text: "Fortschrittsfoto hochgeladen", created_at: new Date(t).toISOString() },
+        { role: "assistant", text: photoReply, created_at: new Date(t + 1).toISOString() },
+      ]);
+      return res.status(200).json({ transcript: "Fortschrittsfoto hochgeladen", reply: photoReply });
     }
 
     let input;

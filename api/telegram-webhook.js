@@ -98,7 +98,7 @@ const handler = async (req, res) => {
         if (action.type === "insert") {
           if (action.table === "debts") {
             await upsertDebt(action.data);
-            results.push(`✅ Gespeichert in "debts"`);
+            results.push(`✅ Schuld gespeichert${action.data && action.data.name ? `: ${action.data.name}` : ""}`);
             continue;
           }
           if (action.table === "expense_budgets") {
@@ -117,7 +117,7 @@ const handler = async (req, res) => {
             const isToday = savedRow.logged_at === todayStr;
 
             if (isToday) {
-              results.push(`✅ Gespeichert in "sales_kpis"`);
+              results.push(`✅ Sales-Zahlen für heute eingetragen`);
               const streakMsg = await checkSalesStreak(savedRow);
               if (streakMsg) results.push(streakMsg);
               const feedback = await checkSalesFeedback();
@@ -129,7 +129,7 @@ const handler = async (req, res) => {
             continue;
           }
           await saveToSupabase(action.table, action.data);
-          results.push(`✅ Gespeichert in "${action.table}"`);
+          results.push(`✅ ${describeInsert(action.table, action.data)}`);
 
           if (action.table === "workouts" && action.data.exercise) {
             const feedback = await checkProgressionFeedback(action.data.exercise, chatId);
@@ -249,6 +249,38 @@ async function getSavedChatId() {
 }
 
 module.exports.processWebMessage = processWebMessage;
+
+// Fortschrittsfoto aus dem Dashboard: gleiche Auswertung wie bei einem Foto in Telegram.
+async function processWebPhoto({ imageBuffer, caption }) {
+  const chatId = (await getSavedChatId()) || 1;
+  const replies = [];
+  await webReplies.run(replies, () => handlePhotoMessage(chatId, { caption: caption || null }, imageBuffer));
+  return { replies };
+}
+
+module.exports.processWebPhoto = processWebPhoto;
+
+// Bestätigung in normalen Worten statt Tabellennamen.
+function describeInsert(table, data) {
+  const d = data || {};
+  const eur = (n) => `${Number(n).toLocaleString("de-DE")} €`;
+  try {
+    if (table === "expenses" && d.amount != null) return `${eur(d.amount)} für ${d.category || d.description || "Ausgabe"} eingetragen`;
+    if (table === "income" && d.amount != null) return `${eur(d.amount)} Einnahme${d.source ? ` (${d.source})` : ""} eingetragen`;
+    if (table === "tasks" && d.title) return `Aufgabe angelegt: "${d.title}"`;
+    if (table === "nutrition_log") return `${d.description || "Mahlzeit"} eingetragen${d.calories != null ? `: ${d.calories} kcal` : ""}${d.protein_g != null ? `, ${d.protein_g} g Protein` : ""}`;
+    if (table === "workouts" && d.exercise) return `${d.exercise} eingetragen${d.sets && d.reps ? `: ${d.sets} × ${d.reps}` : ""}${d.weight_kg ? ` mit ${d.weight_kg} kg` : ""}`;
+    if (table === "body_metrics") return `Körperwerte eingetragen${d.weight_kg != null ? `: ${d.weight_kg} kg` : ""}${d.body_fat_percent != null ? `, ${d.body_fat_percent} % Körperfett` : ""}`;
+    if (table === "daily_steps" && d.steps != null) return `${Number(d.steps).toLocaleString("de-DE")} Schritte eingetragen`;
+    if (table === "journal_entries") return "Journal-Eintrag gespeichert";
+    if (table === "fixed_costs" && d.name) return `Fixkosten gespeichert: ${d.name}`;
+    if (table === "finance_goals" && d.title) return `Finanzziel gespeichert: ${d.title}`;
+    if (table === "training_goals") return "Trainingsziel gespeichert";
+    if (table === "nutrition_goals") return "Ernährungsziel gespeichert";
+    if (table === "sales_goals") return "Sales-Ziel gespeichert";
+  } catch (err) { /* fällt auf die allgemeine Meldung zurück */ }
+  return "Gespeichert";
+}
 
 // ---------- Telegram / Whisper Hilfsfunktionen ----------
 
@@ -1455,11 +1487,14 @@ async function rememberChatId(chatId) {
 
 // ---------- Fortschrittsfotos ----------
 
-async function handlePhotoMessage(chatId, message) {
+async function handlePhotoMessage(chatId, message, presetBuffer = null) {
   try {
-    const photos = message.photo; // Telegram schickt mehrere Größen, die letzte ist die größte
-    const fileId = photos[photos.length - 1].file_id;
-    const imageBuffer = await downloadTelegramFile(fileId);
+    let imageBuffer = presetBuffer; // aus dem Dashboard kommt das Bild direkt mit
+    if (!imageBuffer) {
+      const photos = message.photo; // Telegram schickt mehrere Größen, die letzte ist die größte
+      const fileId = photos[photos.length - 1].file_id;
+      imageBuffer = await downloadTelegramFile(fileId);
+    }
 
     const fileName = `progress_${Date.now()}.jpg`;
     await uploadToSupabaseStorage(fileName, imageBuffer);
