@@ -18,7 +18,7 @@ module.exports = async (req, res) => {
 
   try {
     if (action === "history") {
-      const rows = await sb("chat_messages?select=id,created_at,role,text&order=created_at.desc&limit=60");
+      const rows = await sb("chat_messages?select=id,created_at,role,text,source&order=created_at.desc&limit=150");
       return res.status(200).json({ messages: rows.reverse() });
     }
 

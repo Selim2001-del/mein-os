@@ -41,6 +41,9 @@ const handler = async (req, res) => {
       transcript = message.text;
     }
 
+    // Telegram-Unterhaltung mitschreiben, damit sie im Dashboard-Chat sichtbar ist
+    if (!webReplies.getStore()) await logChat("user", transcript);
+
     // 3. Läuft gerade ein interaktiver Check-in? Nur eingreifen, wenn die Nachricht wirklich
     //    danach aussieht (kurz + enthält eine Note) oder ein Abbruch gewünscht ist.
     const activeSession = await getCheckinSession(chatId);
@@ -285,6 +288,18 @@ async function sendTelegramMessage(chatId, text) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: chatId, text }),
   });
+  await logChat("assistant", text);
+}
+
+// Schreibt eine Telegram-Nachricht in den gemeinsamen Chatverlauf (Tabelle chat_messages).
+// Fehler hier dürfen den Bot nie aufhalten.
+async function logChat(role, text) {
+  if (!text) return;
+  try {
+    await saveToSupabase("chat_messages", { role, text: String(text).slice(0, 8000), source: "telegram" });
+  } catch (err) {
+    console.error("Chatverlauf konnte nicht gespeichert werden:", err);
+  }
 }
 
 // ---------- Claude Hilfsfunktionen ----------
