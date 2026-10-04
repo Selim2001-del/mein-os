@@ -1,6 +1,11 @@
 // Ablauf: Sprachnachricht -> Whisper (Text) -> Claude entscheidet: LOGGEN, FRAGE, oder CHECK-IN-ABLAUF?
+// Dieselbe Verarbeitung nutzt auch das Mikrofon im Dashboard (api/voice.js -> processWebMessage).
 
-module.exports = async (req, res) => {
+const { AsyncLocalStorage } = require("node:async_hooks");
+// Im Web-Modus landen alle Bot-Antworten in dieser Liste statt in Telegram.
+const webReplies = new AsyncLocalStorage();
+
+const handler = async (req, res) => {
   if (req.method !== "POST") {
     return res.status(200).send("OK");
   }
@@ -14,7 +19,7 @@ module.exports = async (req, res) => {
     }
 
     const chatId = message.chat.id;
-    await rememberChatId(chatId);
+    if (!webReplies.getStore()) await rememberChatId(chatId);
 
     // Fortschrittsfoto? Separat behandeln, keine Sprachverarbeitung nötig.
     if (message.photo) {
@@ -194,7 +199,7 @@ module.exports = async (req, res) => {
       }
     }
 
-    await sendTelegramMessage(chatId, results.join("\n"));
+    if (results.length) await sendTelegramMessage(chatId, results.join("\n"));
     return res.status(200).send("OK");
   } catch (err) {
     console.error("Fehler im Webhook:", err);
@@ -210,6 +215,38 @@ module.exports = async (req, res) => {
   }
 };
 
+module.exports = handler;
+
+// Einstieg fürs Dashboard: Audio oder Text rein, Antworten als Liste zurück (nichts geht an Telegram).
+// Läuft durch denselben Ablauf wie eine getippte Telegram-Nachricht.
+async function processWebMessage({ audioBuffer, filename, text }) {
+  const transcript = audioBuffer ? await transcribeAudio(audioBuffer, filename || "voice.webm") : (text || "").trim();
+  if (!transcript) throw new Error("Ich konnte nichts verstehen. Bitte noch einmal sprechen.");
+  const chatId = (await getSavedChatId()) || 1;
+  const replies = [];
+  const fakeRes = { status() { return this; }, send() { return this; } };
+  await webReplies.run(replies, () => handler({ method: "POST", body: { message: { chat: { id: chatId }, text: transcript } } }, fakeRes));
+  return { transcript, replies };
+}
+
+async function getSavedChatId() {
+  try {
+    const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/bot_settings?id=eq.1&select=chat_id`, {
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+      },
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows[0] ? rows[0].chat_id : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+module.exports.processWebMessage = processWebMessage;
+
 // ---------- Telegram / Whisper Hilfsfunktionen ----------
 
 async function downloadTelegramFile(fileId) {
@@ -222,9 +259,9 @@ async function downloadTelegramFile(fileId) {
   return Buffer.from(arrayBuffer);
 }
 
-async function transcribeAudio(audioBuffer) {
+async function transcribeAudio(audioBuffer, filename = "voice.ogg") {
   const formData = new FormData();
-  formData.append("file", new Blob([audioBuffer]), "voice.ogg");
+  formData.append("file", new Blob([audioBuffer]), filename);
   formData.append("model", "whisper-1");
 
   const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -237,6 +274,11 @@ async function transcribeAudio(audioBuffer) {
 }
 
 async function sendTelegramMessage(chatId, text) {
+  const collected = webReplies.getStore();
+  if (collected) {
+    if (text) collected.push(text);
+    return;
+  }
   const token = process.env.TELEGRAM_BOT_TOKEN;
   await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
