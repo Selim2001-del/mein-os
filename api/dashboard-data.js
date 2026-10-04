@@ -12,6 +12,9 @@ module.exports = async (req, res) => {
   }
 
   try {
+    // Einnahmen/Ausgaben der letzten 62 Tage: daraus wird der laufende Monat gebildet
+    // und der Kontostand seit der letzten Vermögens-Erfassung fortgeschrieben.
+    const recentSince = daysAgoIso(62);
     const [
       tasks,
       completedTasks,
@@ -26,8 +29,8 @@ module.exports = async (req, res) => {
       journalEntries,
       fixedCosts,
       debts,
-      income,
-      expenses,
+      incomeRecent,
+      expensesRecent,
       financeGoals,
       financeSnapshots,
       expenseBudgets,
@@ -50,8 +53,8 @@ module.exports = async (req, res) => {
       sb("journal_entries?order=created_at.desc&limit=30"),
       sb("fixed_costs"),
       sb("debts"),
-      sb(`income?logged_at=gte.${monthStartIso()}`),
-      sb(`expenses?logged_at=gte.${monthStartIso()}`),
+      sb(`income?logged_at=gte.${recentSince}&order=logged_at.desc&limit=500`),
+      sb(`expenses?logged_at=gte.${recentSince}&order=logged_at.desc&limit=2000`),
       sb("finance_goals"),
       sb("finance_snapshots?order=logged_at.desc&limit=30"),
       sb("expense_budgets"),
@@ -61,6 +64,21 @@ module.exports = async (req, res) => {
       sb(`sales_kpis?logged_at=gte.${daysAgoIso(120)}`),
       sb("sales_goals?order=updated_at.desc&limit=1"),
     ]);
+
+    // Lohn, der ab dem 25. eines Monats eingeht, zählt für den Folgemonat.
+    const SALARY_ROLLOVER_DAY = 25;
+    const monthStart = new Date(monthStartIso());
+    const prevMonthStart = new Date(monthStart);
+    prevMonthStart.setUTCMonth(prevMonthStart.getUTCMonth() - 1);
+    const isLateSalary = (i) =>
+      /lohn|gehalt/i.test(`${i.source || ""} ${i.description || ""}`) &&
+      new Date(i.logged_at).getUTCDate() >= SALARY_ROLLOVER_DAY;
+    const income = incomeRecent.filter((i) => {
+      const at = new Date(i.logged_at);
+      if (at >= monthStart) return !isLateSalary(i);
+      return at >= prevMonthStart && isLateSalary(i);
+    });
+    const expenses = expensesRecent.filter((e) => new Date(e.logged_at) >= monthStart);
 
     const todayStr = new Date().toISOString().split("T")[0];
     const nutritionTodayCount = nutritionHistory.filter((n) => (n.logged_at || "").startsWith(todayStr)).length;
@@ -99,6 +117,9 @@ module.exports = async (req, res) => {
       debts,
       income,
       expenses,
+      incomeRecent,
+      expensesRecent,
+      recentSince,
       financeGoals,
       financeSnapshots,
       expenseBudgets,
