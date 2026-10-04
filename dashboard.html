@@ -551,27 +551,49 @@
   @media (max-width: 420px) { .cash-num { font-size: 44px; } .cash-tile b { font-size: 15px; } }
   @media (prefers-reduced-motion: reduce) { .cash-line, .cash-area, .cash-ripple, .cash-scan, .flow-seg, .budget-ring .arc { animation: none !important; } }
 
-  /* ---- Sprach-Assistent: Mikrofon-Knopf + Chat ---- */
-  @keyframes vaRing { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(2.1); opacity: 0; } }
-  @keyframes vaIn { from { opacity: 0; transform: translateY(12px) scale(.98); } }
+  /* ---- Sprach-Assistent: Knopf in der Navigation, Aufnahme-Leiste, Chat als Sheet ---- */
+  @keyframes vaIn { from { opacity: 0; transform: translateY(10px); } }
   @keyframes vaDots { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
-  .va-fab { position: fixed; right: 18px; bottom: 24px; z-index: 70; width: 60px; height: 60px; border-radius: 50%; border: 1px solid rgba(94,242,160,.55); background: #0b0d0c; color: var(--accent); display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 0 26px -6px var(--accent-glow); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: transform .15s ease, background .2s ease, color .2s ease; }
-  .va-fab::before, .va-fab::after { content: ""; position: absolute; inset: -1px; border-radius: 50%; border: 1px solid var(--accent); opacity: 0; pointer-events: none; }
-  .va-fab.rec { background: var(--accent); color: #060807; transform: scale(1.12); }
-  .va-fab.rec::before { animation: vaRing 1.4s ease-out infinite; }
-  .va-fab.rec::after { animation: vaRing 1.4s ease-out .7s infinite; }
-  .va-fab.busy { border-color: rgba(94,242,160,.15); }
-  .va-fab.busy::before { opacity: 1; inset: -1px; border-color: transparent; border-top-color: var(--accent); animation: hudSpin .9s linear infinite; }
-  .va-fab.has-open { background: rgba(94,242,160,.12); }
-  .va-status { position: fixed; right: 88px; bottom: 40px; z-index: 70; padding: 8px 12px; border-radius: 12px; border: 1px solid rgba(94,242,160,.3); background: #0b0d0c; font-family: var(--mono); font-size: 10.5px; letter-spacing: .5px; color: var(--text); white-space: nowrap; pointer-events: none; opacity: 0; transform: translateX(6px); transition: opacity .2s, transform .2s; }
-  .va-status.show { opacity: 1; transform: none; }
-  .va-panel { position: fixed; right: 14px; bottom: 98px; z-index: 65; width: min(400px, calc(100vw - 28px)); height: min(64vh, 560px); display: flex; flex-direction: column; border-radius: 20px; border: 1px solid rgba(94,242,160,.3); background: #0b0d0c; box-shadow: 0 24px 60px -20px rgba(0,0,0,.8), 0 0 40px -18px var(--accent-glow); overflow: hidden; animation: vaIn .25s ease both; }
-  .va-panel[hidden] { display: none; }
-  .va-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--border); }
-  .va-title { font-size: 15px; font-weight: 300; margin-top: 4px; }
-  .va-x { width: 36px; height: 36px; border-radius: 12px; border: 1px solid var(--border); background: none; color: var(--text-dim); cursor: pointer; display: flex; align-items: center; justify-content: center; }
-  .va-msgs { flex: 1; overflow-y: auto; padding: 14px 14px 6px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }
-  .va-msg { max-width: 86%; padding: 10px 13px; border-radius: 16px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; animation: vaIn .25s ease both; }
+  @keyframes vaScanX { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+  .tab-gap { display: none; }
+
+  .va-fab { position: fixed; right: 24px; bottom: 28px; z-index: 70; width: 62px; height: 62px; padding: 0; border-radius: 50%; border: 1px solid rgba(94,242,160,.5); background: #0b0d0c; color: var(--accent); display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 0 0 6px var(--bg), 0 0 30px -6px var(--accent-glow); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; transform: translateX(var(--tx, 0)) scale(var(--sc, 1)); transition: transform .22s cubic-bezier(.2,.8,.2,1), background .25s, color .25s, border-color .25s; }
+  .va-fab:active { --sc: .96; }
+  .va-fab .ring { position: absolute; left: -8px; top: -8px; width: 78px; height: 78px; animation: hudSpin 18s linear infinite; pointer-events: none; opacity: .75; transition: opacity .25s; }
+  .va-fab .halo { position: absolute; inset: -1px; border-radius: 50%; border: 1px solid var(--accent); opacity: 0; pointer-events: none; transform: scale(var(--lvl, 1)); transition: transform .08s linear, opacity .2s; }
+  .va-fab.rec { --sc: 1.14; background: var(--accent); color: #060807; border-color: var(--accent); }
+  .va-fab.rec .halo { opacity: .6; }
+  .va-fab.rec .ring { opacity: 0; }
+  .va-fab.busy .ring { animation-duration: 1.1s; opacity: 1; }
+  .va-fab.has-open { border-color: var(--accent); background: #0f1512; }
+
+  .va-rec { position: fixed; z-index: 69; right: 104px; bottom: 32px; height: 54px; padding: 0 18px; display: flex; align-items: center; gap: 12px; border-radius: 27px; border: 1px solid rgba(94,242,160,.35); background: rgba(11,13,12,.97); box-shadow: 0 0 30px -10px var(--accent-glow); opacity: 0; transform: translateY(10px) scale(.98); pointer-events: none; transition: opacity .22s, transform .22s cubic-bezier(.2,.8,.2,1); }
+  .va-rec.show { opacity: 1; transform: none; }
+  .va-rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); animation: hudPulseDot 1.2s ease-in-out infinite; }
+  .va-bars { display: flex; align-items: center; gap: 3px; height: 26px; }
+  .va-bars i { width: 3px; height: 26px; border-radius: 2px; background: var(--accent); transform: scaleY(.08); transition: transform .07s linear; }
+  #vaRecTime { font-family: var(--mono); font-size: 13px; color: var(--accent); min-width: 34px; }
+  #vaRecHint { font-family: var(--mono); font-size: 10px; letter-spacing: 1px; color: var(--text-dim); white-space: nowrap; }
+  .va-rec.text .va-bars, .va-rec.text .va-rec-dot, .va-rec.text #vaRecTime { display: none; }
+  .va-rec.text #vaRecHint { color: var(--text); }
+
+  .va-backdrop { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .3s ease; }
+  .va-backdrop.show { opacity: 1; pointer-events: auto; }
+  .va-panel { position: fixed; z-index: 65; right: 22px; bottom: 108px; width: 400px; height: min(66vh, 580px); display: flex; flex-direction: column; border-radius: 22px; border: 1px solid rgba(94,242,160,.28); background: #0a0c0b; box-shadow: 0 24px 60px -20px rgba(0,0,0,.85), 0 0 44px -20px var(--accent-glow); overflow: hidden; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(24px) scale(.97); transform-origin: bottom right; transition: opacity .28s ease, transform .36s cubic-bezier(.2,.8,.2,1), visibility 0s linear .36s; }
+  .va-panel.open { opacity: 1; visibility: visible; pointer-events: auto; transform: none; transition: opacity .28s ease, transform .36s cubic-bezier(.2,.8,.2,1), visibility 0s; }
+  .va-grip { display: none; }
+  .va-head { position: relative; display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--border); overflow: hidden; }
+  .va-head::after { content: ""; position: absolute; left: 0; bottom: -1px; width: 30%; height: 1px; background: linear-gradient(90deg, transparent, var(--accent), transparent); opacity: 0; }
+  .va-panel.busy .va-head::after { opacity: 1; animation: vaScanX 1.4s linear infinite; }
+  .va-orb { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
+  .va-orb svg { position: absolute; inset: 0; animation: hudSpin 14s linear infinite; }
+  .va-orb span { position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 12px var(--accent); animation: hudPulseDot 2.4s ease-in-out infinite; }
+  .va-panel.busy .va-orb svg { animation-duration: 1.4s; }
+  .va-head-txt { flex: 1; min-width: 0; }
+  .va-title { font-size: 15px; font-weight: 300; margin-top: 3px; }
+  .va-x { width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--border); background: none; color: var(--text-dim); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .va-msgs { flex: 1; overflow-y: auto; padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; overscroll-behavior: contain; }
+  .va-msg { max-width: 86%; padding: 10px 13px; border-radius: 16px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; animation: vaIn .3s cubic-bezier(.2,.8,.2,1) both; }
   .va-msg.user { align-self: flex-end; border: 1px solid rgba(94,242,160,.4); background: rgba(94,242,160,.07); border-bottom-right-radius: 5px; }
   .va-msg.assistant { align-self: flex-start; border: 1px solid var(--border); background: rgba(255,255,255,.03); border-bottom-left-radius: 5px; }
   .va-msg.err { border-color: rgba(232,168,85,.5); color: #E8A855; }
@@ -580,17 +602,27 @@
   .va-dots span { display: inline-block; width: 5px; height: 5px; margin-right: 4px; border-radius: 50%; background: var(--accent); animation: vaDots 1.2s infinite; }
   .va-dots span:nth-child(2) { animation-delay: .2s; } .va-dots span:nth-child(3) { animation-delay: .4s; }
   .va-day { align-self: center; font-family: var(--mono); font-size: 9px; letter-spacing: 2px; color: var(--text-dim); padding: 4px 0; }
-  .va-empty { margin: auto; text-align: center; font-size: 13px; line-height: 1.6; color: var(--text-dim); padding: 0 18px; }
+  .va-empty { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; font-size: 13px; line-height: 1.6; color: var(--text-dim); padding: 0 12px; }
+  .va-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+  .va-chip { min-height: 40px; padding: 0 14px; border-radius: 20px; border: 1px solid rgba(94,242,160,.3); background: none; color: var(--text); font-family: var(--sora); font-size: 12.5px; font-weight: 300; cursor: pointer; }
   .va-input { display: flex; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--border); }
-  .va-input input { flex: 1; min-width: 0; height: 42px; padding: 0 14px; border-radius: 21px; border: 1px solid var(--border); background: #060807; color: var(--text); font-family: var(--sora); font-size: 14px; outline: none; }
+  .va-input input { flex: 1; min-width: 0; height: 44px; padding: 0 16px; border-radius: 22px; border: 1px solid var(--border); background: #060807; color: var(--text); font-family: var(--sora); font-size: 16px; font-weight: 300; outline: none; transition: border-color .2s; }
   .va-input input:focus { border-color: rgba(94,242,160,.5); }
-  .va-input button { width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; border: 1px solid rgba(94,242,160,.5); background: none; color: var(--accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .va-input button { width: 44px; height: 44px; flex-shrink: 0; border-radius: 50%; border: 1px solid rgba(94,242,160,.5); background: none; color: var(--accent); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+
+  /* Handy: Knopf sitzt mittig in der Navigation, der Chat fährt als Sheet von unten hoch */
   @media (max-width: 860px) {
-    .va-fab { right: 16px; bottom: calc(74px + env(safe-area-inset-bottom, 0px)); }
-    .va-status { right: 86px; bottom: calc(90px + env(safe-area-inset-bottom, 0px)); }
-    .va-panel { bottom: calc(146px + env(safe-area-inset-bottom, 0px)); height: min(58vh, 520px); }
+    .tab-gap { display: block; flex: 0 0 74px; }
+    .va-fab { right: auto; left: 50%; --tx: -50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
+    .va-rec { left: 14px; right: 14px; bottom: calc(96px + env(safe-area-inset-bottom, 0px)); justify-content: center; }
+    .va-backdrop { z-index: 48; }
+    .va-panel { z-index: 49; left: 0; right: 0; bottom: 0; width: auto; height: 78vh; padding-bottom: calc(58px + env(safe-area-inset-bottom, 0px)); border-radius: 24px 24px 0 0; border-width: 1px 0 0 0; transform: translateY(102%); transform-origin: bottom center; box-shadow: 0 -20px 60px -20px rgba(0,0,0,.9), 0 -1px 40px -18px var(--accent-glow); }
+    .va-panel.open { transform: none; }
+    .va-grip { display: block; width: 40px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.16); margin: 8px auto 0; flex-shrink: 0; }
+    .va-head { padding-top: 10px; }
+    .toast { bottom: 110px; }
   }
-  @media (prefers-reduced-motion: reduce) { .va-fab::before, .va-fab::after, .va-msg, .va-panel { animation: none !important; } }
+  @media (prefers-reduced-motion: reduce) { .va-fab .ring, .va-orb svg, .va-msg, .va-rec-dot { animation: none !important; } .va-panel, .va-backdrop, .va-rec, .va-fab { transition: none !important; } }
 </style>
 </head>
 <body>
@@ -633,6 +665,7 @@
       <button class="tab-btn active" onclick="switchTab('home')"><span class="tab-dot"></span>HOME</button>
       <button class="tab-btn" onclick="switchTab('training')"><span class="tab-dot"></span>FIT</button>
       <button class="tab-btn" onclick="switchTab('sales')"><span class="tab-dot"></span>SALES</button>
+      <span class="tab-gap" aria-hidden="true"></span>
       <button class="tab-btn" onclick="switchTab('character')"><span class="tab-dot"></span>MIND</button>
       <button class="tab-btn" onclick="switchTab('finance')"><span class="tab-dot"></span>CASH</button>
       <button class="tab-btn" onclick="switchTab('tasks')"><span class="tab-dot"></span>TASKS</button>
@@ -943,10 +976,13 @@
   </div>
 
   <!-- Sprach-Assistent: gedrückt halten = sprechen, kurz tippen = Chat auf/zu -->
-  <div class="va-panel" id="vaPanel" hidden>
+  <div class="va-backdrop" id="vaBackdrop" onclick="vaToggle(false)"></div>
+  <div class="va-panel" id="vaPanel" role="dialog" aria-label="Assistent" aria-hidden="true">
+    <div class="va-grip"></div>
     <div class="va-head">
-      <div><div class="hud-k acc">Assistent</div><div class="va-title">Sprich oder schreib mir</div></div>
-      <button type="button" class="va-x" onclick="vaToggle(false)" aria-label="Chat schließen"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <div class="va-orb"><svg width="34" height="34" viewBox="0 0 34 34"><circle cx="17" cy="17" r="15" fill="none" stroke="rgba(94,242,160,0.4)" stroke-dasharray="2 5"></circle><path d="M17 2 A15 15 0 0 1 32 17" fill="none" stroke="#5EF2A0" stroke-width="1.5" stroke-linecap="round"></path></svg><span></span></div>
+      <div class="va-head-txt"><div class="hud-k acc">Assistent</div><div class="va-title" id="vaState">Bereit</div></div>
+      <button type="button" class="va-x" onclick="vaToggle(false)" aria-label="Chat schließen"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></button>
     </div>
     <div class="va-msgs" id="vaMsgs"></div>
     <form class="va-input" onsubmit="vaSendText(event)">
@@ -954,8 +990,15 @@
       <button type="submit" aria-label="Senden"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
     </form>
   </div>
-  <div class="va-status" id="vaStatus" role="status"></div>
+  <div class="va-rec text" id="vaRec" role="status">
+    <span class="va-rec-dot"></span>
+    <span id="vaRecTime">0:00</span>
+    <span class="va-bars" id="vaBars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    <span id="vaRecHint"></span>
+  </div>
   <button type="button" class="va-fab" id="vaFab" aria-label="Gedrückt halten zum Sprechen, kurz tippen öffnet den Chat">
+    <svg class="ring" viewBox="0 0 78 78"><circle cx="39" cy="39" r="37" fill="none" stroke="rgba(94,242,160,0.35)" stroke-dasharray="2 6"></circle><path d="M39 2 A37 37 0 0 1 76 39" fill="none" stroke="#5EF2A0" stroke-width="1.5" stroke-linecap="round"></path></svg>
+    <span class="halo"></span>
     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
   </button>
 </div>
@@ -2125,15 +2168,26 @@ async function completeFocusTask(taskId, btn) {
 // Sprach-Assistent: Mikrofon gedrückt halten -> /api/voice -> Antwort im Chat,
 // danach lädt das Dashboard die Daten neu. Kurz tippen öffnet/schließt den Chat.
 // =====================================================================
-const VA = { open: false, loaded: false, msgs: [], rec: null, chunks: [], stream: null, t0: 0, tick: null, hold: null, down: false, recording: false, busy: false, statusTimer: null };
+const VA = { open: false, loaded: false, msgs: [], rec: null, chunks: [], stream: null, t0: 0, tick: null, hold: null, down: false, recording: false, busy: false, hintTimer: null, ac: null, raf: 0 };
 const VA_HOLD_MS = 260;
+const VA_CHIPS = ["Was steht heute an?", "Wie läuft mein Monat finanziell?", "Wie waren meine Check-ins diese Woche?"];
 
-function vaStatus(text, ms) {
-  const el = document.getElementById("vaStatus");
-  clearTimeout(VA.statusTimer);
-  el.textContent = text || "";
+// Kurzer Hinweis in der Leiste neben/über dem Knopf (ohne Pegel-Anzeige)
+function vaHint(text, ms) {
+  const el = document.getElementById("vaRec");
+  clearTimeout(VA.hintTimer);
+  if (VA.recording) return;
+  el.classList.add("text");
+  document.getElementById("vaRecHint").textContent = text || "";
   el.classList.toggle("show", !!text);
-  if (text && ms) VA.statusTimer = setTimeout(() => el.classList.remove("show"), ms);
+  if (text && ms) VA.hintTimer = setTimeout(() => el.classList.remove("show"), ms);
+}
+
+function vaSetState() {
+  const label = VA.recording ? "Hört zu …" : VA.busy ? "Denkt nach …" : "Bereit";
+  document.getElementById("vaState").textContent = label;
+  document.getElementById("vaPanel").classList.toggle("busy", VA.busy);
+  document.getElementById("vaFab").classList.toggle("busy", VA.busy);
 }
 
 // Text sicher ausgeben; **fett** und *kursiv* aus den Antworten werden zu echter Auszeichnung
@@ -2147,7 +2201,7 @@ function vaFmt(text) {
 function vaRender() {
   const box = document.getElementById("vaMsgs");
   if (!VA.msgs.length) {
-    box.innerHTML = `<div class="va-empty">Halte den Mikrofon-Knopf gedrückt und sag zum Beispiel:<br>„45 Euro für Lebensmittel ausgegeben“<br>„Heute 150 Cold Calls gemacht“<br>„Neue Aufgabe: Auto zum TÜV“</div>`;
+    box.innerHTML = `<div class="va-empty"><div>Halte den Mikrofon-Knopf gedrückt und sprich,<br>oder frag mich etwas:</div><div class="va-chips">${VA_CHIPS.map((c) => `<button type="button" class="va-chip" onclick="vaAsk(this.textContent)">${esc(c)}</button>`).join("")}</div></div>`;
     return;
   }
   let lastDay = "";
@@ -2158,8 +2212,9 @@ function vaRender() {
     lastDay = day;
     const body = m.pending ? `<span class="va-dots"><span></span><span></span><span></span></span>` : vaFmt(m.text);
     const time = m.pending ? "" : `<time>${d.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" })}${m.source === "telegram" ? " · TELEGRAM" : ""}</time>`;
-    return `${head}<div class="va-msg ${m.role}${m.err ? " err" : ""}">${body}${time}</div>`;
+    return `${head}<div class="va-msg ${m.role}${m.err ? " err" : ""}"${m.fresh ? "" : ' style="animation:none"'}>${body}${time}</div>`;
   }).join("");
+  VA.msgs.forEach((m) => { if (!m.pending) m.fresh = false; });
   box.scrollTop = box.scrollHeight;
 }
 
@@ -2178,7 +2233,10 @@ async function vaLoad() {
 
 function vaToggle(force) {
   VA.open = typeof force === "boolean" ? force : !VA.open;
-  document.getElementById("vaPanel").hidden = !VA.open;
+  const panel = document.getElementById("vaPanel");
+  panel.classList.toggle("open", VA.open);
+  panel.setAttribute("aria-hidden", String(!VA.open));
+  document.getElementById("vaBackdrop").classList.toggle("show", VA.open);
   document.getElementById("vaFab").classList.toggle("has-open", VA.open);
   if (VA.open) { vaRender(); if (!VA.loaded) vaLoad(); }
 }
@@ -2186,12 +2244,11 @@ function vaToggle(force) {
 async function vaSend(payload, placeholderText) {
   if (VA.busy) return;
   VA.busy = true;
-  const fab = document.getElementById("vaFab");
-  fab.classList.add("busy");
+  vaSetState();
   vaToggle(true);
   const now = new Date().toISOString();
-  const mine = { role: "user", text: placeholderText || "", created_at: now, pending: !placeholderText, local: true };
-  const reply = { role: "assistant", text: "", created_at: now, pending: true, local: true };
+  const mine = { role: "user", text: placeholderText || "", created_at: now, pending: !placeholderText, local: true, fresh: true };
+  const reply = { role: "assistant", text: "", created_at: now, pending: true, local: true, fresh: true };
   VA.msgs.push(mine, reply);
   vaRender();
   try {
@@ -2206,10 +2263,13 @@ async function vaSend(payload, placeholderText) {
     reply.text = "Das hat nicht geklappt: " + e.message; reply.pending = false; reply.err = true;
   }
   mine.local = reply.local = false;
+  reply.fresh = true;
   VA.busy = false;
-  fab.classList.remove("busy");
+  vaSetState();
   vaRender();
 }
+
+function vaAsk(text) { if (text && !VA.busy) vaSend({ text }, text); }
 
 function vaSendText(ev) {
   ev.preventDefault();
@@ -2220,16 +2280,44 @@ function vaSendText(ev) {
   vaSend({ text }, text);
 }
 
+// Pegel-Anzeige: Balken und Ring am Knopf reagieren auf die Stimme
+function vaMeterStart(stream) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    VA.ac = new AC();
+    const an = VA.ac.createAnalyser();
+    an.fftSize = 64; an.smoothingTimeConstant = 0.6;
+    VA.ac.createMediaStreamSource(stream).connect(an);
+    const data = new Uint8Array(an.frequencyBinCount);
+    const bars = document.querySelectorAll("#vaBars i"), fab = document.getElementById("vaFab");
+    const loop = () => {
+      an.getByteFrequencyData(data);
+      let sum = 0;
+      bars.forEach((b, i) => { const v = data[Math.min(data.length - 1, 1 + i)] / 255; sum += v; b.style.transform = `scaleY(${Math.max(0.08, v).toFixed(2)})`; });
+      fab.style.setProperty("--lvl", (1.08 + (sum / bars.length) * 0.5).toFixed(3));
+      VA.raf = requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) { /* ohne Pegel-Anzeige geht es auch */ }
+}
+function vaMeterStop() {
+  cancelAnimationFrame(VA.raf);
+  if (VA.ac) { VA.ac.close().catch(() => {}); VA.ac = null; }
+  document.querySelectorAll("#vaBars i").forEach((b) => { b.style.transform = ""; });
+  document.getElementById("vaFab").style.removeProperty("--lvl");
+}
+
 async function vaStartRec() {
   if (VA.busy || VA.recording) return;
-  if (!navigator.mediaDevices || !window.MediaRecorder) { vaStatus("Dieser Browser kann nicht aufnehmen", 3500); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) { vaHint("Dieser Browser kann nicht aufnehmen", 3500); return; }
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-  catch (e) { vaStatus("Mikrofon nicht erlaubt", 3500); return; }
+  catch (e) { vaHint("Mikrofon nicht erlaubt", 3500); return; }
   if (!VA.down) {
     // Finger wurde schon losgelassen (z.B. wegen der Erlaubnis-Abfrage beim ersten Mal)
     stream.getTracks().forEach((t) => t.stop());
-    vaStatus("Mikrofon bereit – jetzt gedrückt halten", 3500);
+    vaHint("Mikrofon bereit – jetzt gedrückt halten", 3500);
     return;
   }
   const type = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
@@ -2238,9 +2326,15 @@ async function vaStartRec() {
   VA.rec.ondataavailable = (e) => { if (e.data && e.data.size) VA.chunks.push(e.data); };
   VA.rec.start();
   VA.recording = true; VA.t0 = Date.now();
+  clearTimeout(VA.hintTimer);
   document.getElementById("vaFab").classList.add("rec");
+  const bar = document.getElementById("vaRec");
+  bar.classList.remove("text"); bar.classList.add("show");
+  document.getElementById("vaRecHint").textContent = "LOSLASSEN ZUM SENDEN";
   if (navigator.vibrate) navigator.vibrate(15);
-  const show = () => { const s = Math.floor((Date.now() - VA.t0) / 1000); vaStatus(`Aufnahme ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")} · loslassen zum Senden`); };
+  vaMeterStart(stream);
+  vaSetState();
+  const show = () => { const sec = Math.floor((Date.now() - VA.t0) / 1000); document.getElementById("vaRecTime").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
   show(); VA.tick = setInterval(show, 500);
 }
 
@@ -2248,14 +2342,16 @@ function vaStopRec(send) {
   if (!VA.recording) return;
   VA.recording = false;
   clearInterval(VA.tick);
+  vaMeterStop();
   document.getElementById("vaFab").classList.remove("rec");
+  document.getElementById("vaRec").classList.remove("show");
+  vaSetState();
   const rec = VA.rec, dur = Date.now() - VA.t0;
   rec.onstop = () => {
     VA.stream.getTracks().forEach((t) => t.stop());
     const blob = new Blob(VA.chunks, { type: rec.mimeType || "audio/webm" });
-    if (!send) { vaStatus("Aufnahme verworfen", 2000); return; }
-    if (dur < 600 || !blob.size) { vaStatus("Zu kurz – gedrückt halten und sprechen", 3000); return; }
-    vaStatus("");
+    if (!send) { vaHint("Aufnahme verworfen", 2000); return; }
+    if (dur < 600 || !blob.size) { vaHint("Zu kurz – gedrückt halten und sprechen", 3000); return; }
     const fr = new FileReader();
     fr.onload = () => vaSend({ audio: String(fr.result).split(",")[1], mime: blob.type });
     fr.readAsDataURL(blob);
@@ -2282,8 +2378,9 @@ function vaInit() {
   };
   fab.addEventListener("pointerup", (e) => up(e, true));
   fab.addEventListener("pointercancel", (e) => up(e, false));
-  // Tastatur: Enter/Leertaste öffnet oder schließt den Chat
+  // Tastatur: Enter/Leertaste öffnet oder schließt den Chat, Escape schließt ihn
   fab.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); vaToggle(); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && VA.open) vaToggle(false); });
 }
 
 setInterval(() => { hudT++; hudTick(); }, 1000);
