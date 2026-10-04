@@ -1821,6 +1821,22 @@ function renderCashHud(data) {
   const byDay = {};
   [...(data.financeSnapshots || [])].reverse().forEach((sn) => { if (sn.vermoegen_gesamt != null) byDay[(sn.logged_at || "").slice(0, 10)] = sn; });
   const snaps = Object.keys(byDay).sort().map((d) => ({ d, v: Number(byDay[d].vermoegen_gesamt), raw: byDay[d] }));
+  const lastReal = snaps[snaps.length - 1];
+
+  // Fortschreibung seit der letzten Erfassung: + Einnahmen − Ausgaben (nur wenn der Server die Daten liefert)
+  const sumAmt = (arr, f) => (arr || []).reduce((a, x) => a + Number(f(x) || 0), 0);
+  let est = null;
+  if (lastReal && data.incomeRecent && data.expensesRecent && data.recentSince && new Date(lastReal.raw.logged_at) >= new Date(data.recentSince)) {
+    const since = new Date(lastReal.raw.logged_at);
+    const inc = sumAmt(data.incomeRecent.filter((x) => new Date(x.logged_at) > since), (x) => x.amount);
+    const exp = sumAmt(data.expensesRecent.filter((x) => new Date(x.logged_at) > since), (x) => x.amount);
+    if (inc || exp) est = { inc, exp, delta: inc - exp, since };
+  }
+  if (est) {
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const point = { d: todayKey, v: lastReal.v + est.delta, raw: lastReal.raw, est: true };
+    if (snaps[snaps.length - 1].d === todayKey) snaps[snaps.length - 1] = point; else snaps.push(point);
+  }
   const latest = snaps[snaps.length - 1];
   const numEl = document.getElementById("cashNum"), chEl = document.getElementById("cashChange"), chart = document.getElementById("cashChart");
   if (!latest) {
@@ -1853,17 +1869,18 @@ function renderCashHud(data) {
       <div class="cash-ripple" style="left:${lx}; top:${ly}"></div>
       <div class="cash-dot" style="left:${lx}; top:${ly}"></div>
       <div class="cash-max">${snaps.length > 1 ? "MAX " + mx.toLocaleString("de-DE", { maximumFractionDigits: 0 }) + " €" : "ERSTE ERFASSUNG"}</div>
-      <div class="cash-axis"><span>${fmt(snaps[0].d)}</span><span>${snaps.length} ${snaps.length === 1 ? "ERFASSUNG" : "ERFASSUNGEN"}</span><span>${fmt(latest.d)}</span></div>`;
+      <div class="cash-axis"><span>${fmt(snaps[0].d)}</span><span>${est ? "HEUTE GESCHÄTZT · ERFASST " + fmt(lastReal.d) : snaps.length + (snaps.length === 1 ? " ERFASSUNG" : " ERFASSUNGEN")}</span><span>${fmt(latest.d)}</span></div>`;
   }
 
   const sum = (arr, f) => (arr || []).reduce((a, x) => a + Number(f(x) || 0), 0);
   const snap = latest ? latest.raw : null;
   const debtTotal = sum(data.debts, (x) => x.restbetrag);
   document.getElementById("cashTiles").innerHTML = [
-    ["Liquide", snap ? hudEur(snap.liquide_mittel) : "–"],
+    [est ? "Liquide · geschätzt" : "Liquide", snap ? hudEur(Number(snap.liquide_mittel || 0) + (est ? est.delta : 0)) : "–"],
     ["Rücklagen", snap ? hudEur(snap.ruecklagen) : "–"],
     ["Schulden", hudEur(debtTotal)],
-  ].map((t) => `<div class="cash-tile"><span class="hud-k" style="font-size:8.5px; letter-spacing:2px">${t[0]}</span><b>${t[1]}</b></div>`).join("");
+  ].map((t) => `<div class="cash-tile"><span class="hud-k" style="font-size:8.5px; letter-spacing:2px">${t[0]}</span><b>${t[1]}</b></div>`).join("")
+    + (est ? `<div class="muted" style="grid-column:1 / -1; line-height:1.5">Seit der Erfassung am ${est.since.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}: +${hudEur(est.inc)} Einnahmen, −${hudEur(est.exp)} Ausgaben. Für den echten Stand eine neue Erfassung per Telegram machen.</div>` : "");
 
   // --- Monatsfluss: wohin die Einnahmen gehen ---
   const income = sum(data.income, (x) => x.amount);
