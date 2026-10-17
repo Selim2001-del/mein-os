@@ -63,6 +63,22 @@ module.exports = async (req, res) => {
       }
     }
 
+    if (action === "set_photo_date") {
+      const { id, date } = req.body;
+      if (!id || !/^\d{4}-\d{2}-\d{2}$/.test(date || "")) return res.status(400).json({ error: "id oder date fehlt" });
+      const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/body_metrics?id=eq.${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: {
+          apikey: process.env.SUPABASE_SECRET_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ logged_at: `${date}T12:00:00Z` }),
+      });
+      if (!patchRes.ok) throw new Error(`Supabase-Fehler (${patchRes.status}): ${await patchRes.text()}`);
+      return res.status(200).json({ success: true });
+    }
+
     if (action === "focus_checkin") {
       // Fokuspunkt für einen Tag setzen: answer = true (Ja) / false (Nein) / null (zurücksetzen)
       const { traitId, date, answer } = req.body;

@@ -114,8 +114,16 @@ const handler = async (req, res) => {
           }
           if (action.table === "sales_kpis") {
             const todayStr = new Date().toISOString().split("T")[0];
-            const savedRow = await accumulateSalesKpis(action.data);
+            const isCorrection = action.mode === "set" || (action.data && action.data.mode === "set");
+            const savedRow = await accumulateSalesKpis(action.data, isCorrection ? "set" : "add");
             const isToday = savedRow.logged_at === todayStr;
+            const dateLabelAny = new Date(savedRow.logged_at + "T00:00:00Z").toLocaleDateString("de-DE", { weekday: "short", day: "2-digit", month: "2-digit" });
+
+            if (isCorrection) {
+              const changed = Object.keys(action.data || {}).filter((k) => k !== "logged_at" && k !== "mode").map((k) => `${salesFieldLabel(k)} ${savedRow[k]}`).join(", ");
+              results.push(`✏️ Korrigiert für ${dateLabelAny}: ${changed}`);
+              continue;
+            }
 
             if (isToday) {
               results.push(`✅ Sales-Zahlen für heute eingetragen`);
@@ -194,6 +202,9 @@ const handler = async (req, res) => {
         } else if (action.type === "merge_tasks") {
           const mergeResult = await handleMergeTasks(action.description, action.combined_title);
           results.push(`🔀 ${mergeResult}`);
+        } else if (action.type === "update_photo_date") {
+          const photoResult = await handleUpdatePhotoDate(action.date, action.which);
+          results.push(`📸 ${photoResult}`);
         } else if (action.type === "set_task_size") {
           const sizeResult = await handleSetTaskSize(action.description, action.size);
           results.push(`${action.size === "quick" ? "⚡" : "🧱"} ${sizeResult}`);
@@ -394,6 +405,25 @@ async function getKnownExpenseCategories() {
   }
 }
 
+async function getRecentSalesContext() {
+  try {
+    const since = new Date(Date.now() - 13 * 864e5).toISOString().split("T")[0];
+    const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=gte.${since}&order=logged_at.asc`, {
+      headers: { apikey: process.env.SUPABASE_SECRET_KEY, Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}` },
+    });
+    if (!res.ok) return "";
+    const rows = await res.json();
+    if (!rows.length) return "";
+    const lines = rows.map((r) => {
+      const wd = new Date(r.logged_at + "T12:00:00Z").toLocaleDateString("de-DE", { weekday: "short" });
+      return `${r.logged_at} (${wd}): Calls ${r.cold_calls || 0}, Entscheider ${r.entscheider_erreicht || 0}, Termine ${r.termine_gelegt || 0}, Sets im Kalender ${r.sets_im_kalender || 0}, Gekommen ${r.gekommen || 0}, Sales-Calls terminiert ${r.sales_call_terminiert || 0}`;
+    });
+    return `\n\nAktueller Sales-Stand (bereits gespeichert, letzte 14 Tage):\n${lines.join("\n")}`;
+  } catch (err) {
+    return "";
+  }
+}
+
 async function classifyWithClaude(transcript) {
   const today = new Date().toISOString().split("T")[0];
   const knownCategories = await getKnownExpenseCategories();
@@ -401,7 +431,10 @@ async function classifyWithClaude(transcript) {
     ? `\n\nBekannte Ausgaben-Kategorien dieser Person (mit gesetztem Budget): ${knownCategories.join(", ")}. Bei "expenses" IMMER versuchen, eine dieser Kategorien passend zur Beschreibung zu wählen - AUCH WENN die Person das Wort "Kategorie" nicht explizit sagt (z.B. "getankt" -> Kategorie "${knownCategories.find(c => /tank/i.test(c)) || "Tank"}", "eingekauft"/Essen -> "${knownCategories.find(c => /lebensmittel/i.test(c)) || "Lebensmittel"}"). Nur falls WIRKLICH nichts passt, eine neue, sinnvolle Kategorie wählen.`
     : "";
 
-  const systemPrompt = `Heutiges Datum: ${today}. Nutze das für alle relativen Datumsangaben (z.B. "Ende des Jahres", "in 3 Monaten").${categoryHint}
+  const salesContext = await getRecentSalesContext();
+  const weekdayToday = new Date().toLocaleDateString("de-DE", { weekday: "long", timeZone: "Europe/Berlin" });
+
+  const systemPrompt = `Heutiges Datum: ${today} (${weekdayToday}). Nutze das für alle relativen Datumsangaben (z.B. "Ende des Jahres", "in 3 Monaten", Wochentagsnamen).${categoryHint}${salesContext}
 
 Du bekommst eine gesprochene Notiz einer Person. Sie kann mehrere unabhängige Teile enthalten: neue Fakten zum Speichern, Fragen zu bisherigen Daten, oder Sonderbefehle.
 
@@ -422,7 +455,12 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
    - daily_steps: steps
      Hinweis: logged_at ist automatisch heute, außer die Person nennt explizit ein anderes Datum.
    - sales_kpis: cold_calls, vz_blocks, entscheider_erreicht, entscheider_gepitcht, termine_gelegt, sets_im_kalender, no_show, gekommen, sales_call_terminiert, logged_at
-     Hinweis: Vertriebs-Kennzahlen für den Job. Nur die genannten Felder ausfüllen, Rest weglassen (nicht 0 erfinden). Werte addieren sich automatisch zum Tageswert, falls mehrfach am Tag gemeldet.
+     Hinweis: Vertriebs-Kennzahlen für den Job. Nur die genannten Felder ausfüllen, Rest weglassen (nicht 0 erfinden).
+     KRITISCH - ADDIEREN vs. KORRIGIEREN: Jede sales_kpis-Aktion hat zusätzlich das Feld "mode" (auf Ebene der Aktion, NICHT in data):
+       - "mode":"add" NUR wenn die Person ausdrücklich ZUSÄTZLICHE Aktivität meldet, die noch nicht gezählt ist ("nochmal 30 Calls", "noch einen Termin dazu", "zusätzlich", "weitere").
+       - "mode":"set" in ALLEN anderen Fällen, insbesondere: (a) Korrekturen ("ich hab doch gesagt", "stimmt nicht", "eigentlich", "nicht 4 sondern 2", "korrigier"), (b) die Person nennt für einen oder mehrere Tage, die laut "Aktueller Sales-Stand" schon Werte haben, die Zahlen dieses Tages (z.B. "Dienstag einen Termin, Mittwoch zwei, Donnerstag zwei, heute zwei" = für JEDEN genannten Tag eine eigene set-Aktion mit genau dieser Zahl), (c) eine Tagesbilanz ("heute 150 Calls gemacht") für einen Tag, der schon dieselben Felder hat.
+       - Gibt es für den Tag noch KEINEN Eintrag, ist "add" und "set" gleichwertig - nimm "set".
+       Rechne NIEMALS selbst Summen aus vorherigen Nachrichten zusammen; trage pro Tag den Tageswert ein, den die Person nennt. Nennt die Person nur eine WOCHEN-Summe zur Korrektur ohne Tagesaufteilung, nutze "question" und frage im text nach der Aufteilung pro Tag.
      KRITISCH - Rückwirkendes Eintragen: Die Person kann auch Zahlen für VERGANGENE Tage nachtragen, z.B. "gestern hab ich auch nochmal 130 Calls gemacht", "am Montag hatte ich 40 Calls". Erkenne solche Zeitbezüge (gestern, vorgestern, Wochentagsnamen, explizite Daten) und berechne anhand von "Heutiges Datum" das korrekte Datum als "logged_at" (Format YYYY-MM-DD). OHNE erkennbaren Zeitbezug ("ich hab 100 Calls gemacht") IMMER logged_at auf das heutige Datum setzen - NIEMALS logged_at weglassen, sonst geht der Eintrag auf das falsche Datum.
      KRITISCH - Massen-Nachtragen mehrerer Tage in EINER Nachricht: Die Person trägt evtl. mehrere Wochen/Monate am Stück nach, im Muster "Datum, dann Zahlen, nächstes Datum, dann Zahlen, ...", z.B. "25. August: 100 Calls, 3 Termine. 26. August: 80 Calls, 1 Termin. 27. August: keine Calls gemacht." Erkenne JEDEN Datums-Block als EIGENE separate "insert"-Aktion mit dem jeweils passenden "logged_at" - NIEMALS mehrere Tage in eine Aktion zusammenfassen, auch wenn die Nachricht sehr lang ist mit vielen Daten hintereinander.
    - sales_goals: daily_cold_call_target, daily_termine_target
@@ -482,6 +520,10 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 11. "merge_tasks" - die Person möchte mehrere bestehende Aufgaben zu EINER zusammenfassen, z.B. "nimm die letzten drei Aufgaben und mach eine draus", "fass X, Y und Z zu einer Aufgabe zusammen":
     Format: {"type":"merge_tasks","description":"welche Aufgaben zusammengeführt werden sollen, in normalen Worten","combined_title":"neuer, zusammengefasster Aufgaben-Titel"}
 
+12a. "update_photo_date" - die Person sagt, von WANN ein Fortschrittsfoto ist bzw. korrigiert dessen Datum (z.B. "das Foto war vom 7. Juni", "das letzte Foto ist eigentlich von gestern", "das Foto vom 15.10. war am 12.10."). NIEMALS als journal_entries speichern.
+    Format: {"type":"update_photo_date","date":"YYYY-MM-DD","which":"last"} - "which" ist "last" (zuletzt hochgeladenes Foto, Standard) oder das bisherige Datum des gemeinten Fotos als "YYYY-MM-DD".
+    Monat ohne Jahr: nimm das jüngste Datum, das nicht in der Zukunft liegt.
+
 12. "set_task_size" - die Person hat VORHER schon eine Aufgabe genannt (in dieser oder einer früheren Nachricht) und sagt JETZT NACHTRÄGLICH, wie schnell/aufwändig sie ist, OHNE dabei eine neue Aufgabe zu nennen - z.B. "geht schnell", "das dauert nicht lange", "dafür muss ich mir Zeit nehmen". Bezieht sich die Aussage auf keine bestimmte Aufgabe, nutze description "letzte Aufgabe" (= die zuletzt angelegte offene Aufgabe):
     Format: {"type":"set_task_size","description":"welche Aufgabe, oder 'letzte Aufgabe'","size":"quick"|"big"}
 
@@ -505,9 +547,17 @@ Beispiel:
 Eingabe: "Zeig mir den Pull-Tag für Tag 4 des Trainings diese Woche"
 Ausgabe: [{"type":"question","text":"Wie sieht Tag 4 (Pull) des aktuellen Trainingsplans aus?","relevant_tables":["training_plan"]}]
 
+Beispiel (Korrektur der Wochentage, angenommen heute ist Freitag 2026-10-16 und die Tage haben schon Werte):
+Eingabe: "Ich hatte Dienstag einen Termin gelegt, Mittwoch zwei, Donnerstag zwei und heute zwei."
+Ausgabe: [{"type":"insert","table":"sales_kpis","mode":"set","data":{"termine_gelegt":1,"logged_at":"2026-10-13"}},{"type":"insert","table":"sales_kpis","mode":"set","data":{"termine_gelegt":2,"logged_at":"2026-10-14"}},{"type":"insert","table":"sales_kpis","mode":"set","data":{"termine_gelegt":2,"logged_at":"2026-10-15"}},{"type":"insert","table":"sales_kpis","mode":"set","data":{"termine_gelegt":2,"logged_at":"2026-10-16"}}]
+
+Beispiel (Korrektur direkt danach):
+Eingabe: "Ich hab doch gesagt, zwei Termine gelegt."
+Ausgabe: [{"type":"insert","table":"sales_kpis","mode":"set","data":{"termine_gelegt":2,"logged_at":"<heutiges Datum>"}}]
+
 Beispiel (rückwirkender Sales-Eintrag, angenommen heute ist 2026-09-26):
 Eingabe: "Ich hab heute 100 Calls gemacht, und gestern hab ich auch nochmal 130 Calls gemacht"
-Ausgabe: [{"type":"insert","table":"sales_kpis","data":{"cold_calls":100,"logged_at":"2026-09-26"}},{"type":"insert","table":"sales_kpis","data":{"cold_calls":130,"logged_at":"2026-09-25"}}]
+Ausgabe: [{"type":"insert","table":"sales_kpis","mode":"set","data":{"cold_calls":100,"logged_at":"2026-09-26"}},{"type":"insert","table":"sales_kpis","mode":"set","data":{"cold_calls":130,"logged_at":"2026-09-25"}}]
 
 Beispiel (Massen-Nachtragen mehrerer Tage in einer Nachricht):
 Eingabe: "25. August: 100 Calls, 3 Termine gelegt. 26. August: 80 Calls, 1 Termin. 27. August keine Calls gemacht, war krank."
@@ -633,9 +683,8 @@ async function startCheckinSession(chatId, opts = {}) {
   const allTraits = await res.json();
   // Fokus-Modus: nur die aktuellen Fokuspunkte abfragen; mit "alle" die Leitbild-Eigenschaften (Schulnote)
   const focusTraits = (allTraits || []).filter((t) => t.focus);
-  const traits = opts.all || focusTraits.length === 0
-    ? (allTraits || []).filter((t) => t.answer_type !== "yes_no")
-    : focusTraits;
+  const gradeTraits = (allTraits || []).filter((t) => t.answer_type !== "yes_no");
+  const traits = (opts.all || focusTraits.length === 0) && gradeTraits.length ? gradeTraits : focusTraits;
 
   if (!traits || traits.length === 0) {
     await sendTelegramMessage(chatId, "Du hast noch keine Charaktereigenschaften angelegt. Sag mir erstmal welche, z.B. \"Neue Eigenschaft: Prokrastination, ist ein Flaw\".");
@@ -1238,7 +1287,14 @@ ${JSON.stringify(lifeProfile)}`;
 
 // ---------- Sales-KPIs: Tages-Aufsummierung + Wochenvergleich ----------
 
-async function accumulateSalesKpis(data) {
+function salesFieldLabel(f) {
+  return ({ cold_calls: "Cold Calls", vz_blocks: "VZ-Blocks", entscheider_erreicht: "Entscheider erreicht", entscheider_gepitcht: "Entscheider gepitcht", termine_gelegt: "Termine", sets_im_kalender: "Sets im Kalender", no_show: "No-Shows", gekommen: "Gekommen", sales_call_terminiert: "Sales-Calls terminiert" })[f] || f;
+}
+
+// mode "add": Werte kommen zum Tageswert dazu (z.B. "nochmal 30 Calls").
+// mode "set": Korrektur - die genannten Felder ERSETZEN den Tageswert, nicht genannte bleiben.
+async function accumulateSalesKpis(rawData, mode = "add") {
+  const { mode: _ignored, ...data } = rawData || {};
   const targetDate = data.logged_at || new Date().toISOString().split("T")[0];
   const url = `${process.env.SUPABASE_URL}/rest/v1/sales_kpis?logged_at=eq.${targetDate}`;
   const res = await fetch(url, {
@@ -1255,7 +1311,8 @@ async function accumulateSalesKpis(data) {
     const row = existing[0];
     const merged = {};
     for (const f of fields) {
-      merged[f] = (row[f] || 0) + (data[f] || 0);
+      if (mode === "set") merged[f] = data[f] != null ? data[f] : (row[f] || 0);
+      else merged[f] = (row[f] || 0) + (data[f] || 0);
     }
     const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/sales_kpis?id=eq.${row.id}`, {
       method: "PATCH",
@@ -1560,21 +1617,73 @@ async function handlePhotoMessage(chatId, message, presetBuffer = null) {
       console.error("Körperfett-Schätzung fehlgeschlagen:", visionErr);
     }
 
+    // Datum in der Bildunterschrift ("vom 7. Juni") übernehmen, sonst heute
+    const captionDate = parseGermanDate(message.caption);
     await saveToSupabase("body_metrics", {
       photo_url: signedUrl,
-      photo_note: message.caption || estimateNote,
+      photo_note: estimateNote || message.caption || null,
       body_fat_percent: bodyFatEstimate,
+      ...(captionDate ? { logged_at: `${captionDate}T12:00:00Z` } : {}),
     });
 
     const estimateText = bodyFatEstimate
       ? `\n📊 Geschätzter Körperfettanteil: ~${bodyFatEstimate}% (grobe visuelle Schätzung, keine Messung)${estimateNote ? `\n${estimateNote}` : ""}`
       : "";
     const firstPhotoNote = isFirstPhotoEver ? "\n📸 Das ist dein erstes Fortschrittsfoto - ab jetzt kann verglichen werden!" : "";
-    await sendTelegramMessage(chatId, `✅ Fortschrittsfoto gespeichert.${estimateText}${firstPhotoNote}`);
+    const dateInfo = captionDate
+      ? `\n🗓️ Datum: ${new Date(captionDate + "T12:00:00Z").toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" })}`
+      : `\n🗓️ Als heute gespeichert. Ist das Foto älter? Sag einfach z.B. "das Foto war vom 7. Juni".`;
+    await sendTelegramMessage(chatId, `✅ Fortschrittsfoto gespeichert.${dateInfo}${estimateText}${firstPhotoNote}`);
   } catch (err) {
     console.error("Fehler beim Foto-Upload:", err);
     await sendTelegramMessage(chatId, `❌ Fehler beim Foto-Upload: ${err.message}`);
   }
+}
+
+// Datum aus Freitext ("07.06.", "7. Juni 2026", "2026-06-07") -> YYYY-MM-DD, sonst null
+function parseGermanDate(text) {
+  if (!text) return null;
+  const t = String(text).toLowerCase();
+  const now = new Date();
+  const fix = (y, m, d) => {
+    if (!(m >= 1 && m <= 12 && d >= 1 && d <= 31)) return null;
+    let year = y;
+    if (!year) {
+      year = now.getUTCFullYear();
+      if (new Date(Date.UTC(year, m - 1, d)) > now) year -= 1; // kein Datum in der Zukunft
+    } else if (year < 100) year += 2000;
+    return `${year}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  };
+  let m = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (m) return fix(+m[1], +m[2], +m[3]);
+  m = t.match(/\b(\d{1,2})\.\s?(\d{1,2})\.(\d{2,4})?/);
+  if (m) return fix(m[3] ? +m[3] : null, +m[2], +m[1]);
+  const months = { januar: 1, jänner: 1, februar: 2, märz: 3, maerz: 3, april: 4, mai: 5, juni: 6, juli: 7, august: 8, september: 9, oktober: 10, november: 11, dezember: 12 };
+  m = t.match(/\b(\d{1,2})\.?\s*(januar|jänner|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)\s*(\d{4})?/);
+  if (m) return fix(m[3] ? +m[3] : null, months[m[2]], +m[1]);
+  if (/\bvorgestern\b/.test(t)) return new Date(Date.now() - 2 * 864e5).toISOString().split("T")[0];
+  if (/\bgestern\b/.test(t)) return new Date(Date.now() - 864e5).toISOString().split("T")[0];
+  return null;
+}
+
+async function handleUpdatePhotoDate(date, which) {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Ich konnte das Datum nicht erkennen, sag's bitte nochmal (z.B. \"7. Juni\").";
+  const headers = { apikey: process.env.SUPABASE_SECRET_KEY, Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}` };
+  let url = `${process.env.SUPABASE_URL}/rest/v1/body_metrics?photo_url=not.is.null&select=id,logged_at&order=created_at.desc&limit=1`;
+  if (which && /^\d{4}-\d{2}-\d{2}$/.test(which)) {
+    url = `${process.env.SUPABASE_URL}/rest/v1/body_metrics?photo_url=not.is.null&select=id,logged_at&logged_at=gte.${which}T00:00:00Z&logged_at=lt.${which}T23:59:59Z&order=created_at.desc&limit=1`;
+  }
+  const res = await fetch(url, { headers });
+  const rows = res.ok ? await res.json() : [];
+  if (!rows.length) return "Ich habe kein passendes Foto gefunden.";
+  const patch = await fetch(`${process.env.SUPABASE_URL}/rest/v1/body_metrics?id=eq.${rows[0].id}`, {
+    method: "PATCH",
+    headers: { ...headers, "Content-Type": "application/json" },
+    body: JSON.stringify({ logged_at: `${date}T12:00:00Z` }),
+  });
+  if (!patch.ok) throw new Error(`Supabase-Fehler (${patch.status}): ${await patch.text()}`);
+  const label = new Date(date + "T12:00:00Z").toLocaleDateString("de-DE", { day: "2-digit", month: "long", year: "numeric" });
+  return `Foto-Datum geändert auf ${label}.`;
 }
 
 async function getFirstPhotoRow() {
