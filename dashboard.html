@@ -936,6 +936,10 @@
 
     <!-- CHARAKTER -->
     <div class="tab-page grid" id="page-character">
+      <div class="panel g-12">
+        <h2>Fokus heute</h2>
+        <div id="focusBox"></div>
+      </div>
       <div class="panel g-6">
         <div class="mind-head">
           <div>
@@ -1224,8 +1228,12 @@ function renderCockpit(data) {
   const callGoal = data.salesGoals ? data.salesGoals.daily_cold_call_target : 0;
   const calls = salesToday.cold_calls || 0;
 
-  const traitsCount = (data.personalityTraits || []).length;
-  const checkedToday = new Set((data.personalityCheckins || []).filter(c => c.logged_at === todayStr).map(c => c.trait_id)).size;
+  // Tages-Score: zählt die Fokuspunkte (falls vorhanden), sonst alle Eigenschaften
+  const focusTraitsAll = (data.personalityTraits || []).filter(t => t.focus);
+  const scoreTraits = focusTraitsAll.length ? focusTraitsAll : (data.personalityTraits || []);
+  const scoreTraitIds = new Set(scoreTraits.map(t => t.id));
+  const traitsCount = scoreTraits.length;
+  const checkedToday = new Set((data.personalityCheckins || []).filter(c => c.logged_at === todayStr && scoreTraitIds.has(c.trait_id)).map(c => c.trait_id)).size;
 
   const steps = (data.weeklySteps || []).filter(s => s.logged_at === todayStr).reduce((s, x) => s + (x.steps || 0), 0);
 
@@ -1892,8 +1900,53 @@ function renderSalesHud(row, salesGoal, offset, dayDate) {
 }
 
 // ---- Mind: Radar über alle Eigenschaften + einklappbare Gruppen nach Note ----
+// ---- Fokus heute: 3 Ja/Nein-Punkte + letzte 7 Tage ----
+function renderFocus(data) {
+  const box = document.getElementById("focusBox");
+  if (!box) return;
+  const focus = (data.personalityTraits || []).filter((t) => t.focus);
+  if (!focus.length) { box.innerHTML = `<span class="muted">Keine Fokuspunkte gesetzt</span>`; return; }
+  const today = new Date();
+  const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(today); d.setDate(d.getDate() - (6 - i)); return d.toISOString().split("T")[0]; });
+  const todayStr = days[6];
+  const ans = {};
+  for (const c of data.personalityCheckins || []) ans[c.trait_id + "|" + c.logged_at] = c.note;
+  const btn = (t, val, label, active) => `<button onclick="setFocus('${t.id}','${todayStr}',${val},this)" style="flex:1; padding:10px 0; border-radius:10px; font-family:var(--mono); font-size:12px; letter-spacing:1px; cursor:pointer; border:1px solid ${active ? (val ? "#5EF2A0" : "#E8A855") : "rgba(94,242,160,0.18)"}; background:${active ? (val ? "rgba(94,242,160,0.16)" : "rgba(232,168,85,0.14)") : "transparent"}; color:${active ? (val ? "#5EF2A0" : "#E8A855") : "#8C9A92"}">${label}</button>`;
+  box.innerHTML = focus.map((t) => {
+    const cur = ans[t.id + "|" + todayStr];
+    const yes = days.filter((d) => ans[t.id + "|" + d] === 1).length;
+    const dots = days.map((d) => { const v = ans[t.id + "|" + d]; const col = v === 1 ? "#5EF2A0" : v === 0 ? "#E8A855" : "rgba(140,154,146,0.25)"; return `<span title="${d}" style="width:9px; height:9px; border-radius:50%; background:${col}; display:inline-block"></span>`; }).join("");
+    return `<div class="hud-acc-row" style="gap:8px">
+      <div class="top"><span>${esc(t.name)}</span><span style="display:flex; align-items:center; gap:5px">${dots}<span class="muted" style="margin-left:6px">${yes}/7</span></span></div>
+      <span class="muted" style="font-family:var(--sora); font-size:11.5px; line-height:1.45">${esc(t.question || t.new_behavior || "")}</span>
+      <div style="display:flex; gap:8px; margin-top:4px">${btn(t, true, "JA", cur === 1)}${btn(t, false, "NEIN", cur === 0)}</div>
+    </div>`;
+  }).join("");
+}
+
+async function setFocus(traitId, date, val, el) {
+  const pressedActive = el.style.color === "rgb(94, 242, 160)" || el.style.color === "rgb(232, 168, 85)";
+  el.parentElement.querySelectorAll("button").forEach((b) => (b.style.pointerEvents = "none"));
+  try {
+    const pw = localStorage.getItem("dashboard_pw");
+    const res = await fetch("/api/dashboard-action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: pw, action: "focus_checkin", traitId, date, answer: pressedActive ? null : val }),
+    });
+    if (!res.ok) { showToast("Fehler beim Speichern"); return; }
+    showToast(pressedActive ? "Zurückgesetzt" : val ? "Ja eingetragen" : "Nein eingetragen");
+    refreshData();
+  } catch (e) {
+    showToast("Fehler beim Speichern");
+  } finally {
+    el.parentElement && el.parentElement.querySelectorAll("button").forEach((b) => (b.style.pointerEvents = "auto"));
+  }
+}
+
 function renderMindHud(data) {
-  const traits = [...(data.personalityTraits || [])].sort((a, b) => (a.name || "").localeCompare(b.name || "", "de"));
+  renderFocus(data);
+  const traits = [...(data.personalityTraits || [])].filter((t) => t.answer_type !== "yes_no").sort((a, b) => (a.name || "").localeCompare(b.name || "", "de"));
   const byTrait = {};
   for (const c of data.personalityCheckins || []) (byTrait[c.trait_id] = byTrait[c.trait_id] || []).push(c);
   const list = traits.map((t, i) => {

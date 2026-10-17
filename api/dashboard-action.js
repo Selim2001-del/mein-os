@@ -63,6 +63,28 @@ module.exports = async (req, res) => {
       }
     }
 
+    if (action === "focus_checkin") {
+      // Fokuspunkt für einen Tag setzen: answer = true (Ja) / false (Nein) / null (zurücksetzen)
+      const { traitId, date, answer } = req.body;
+      if (!traitId || !date) return res.status(400).json({ error: "traitId oder date fehlt" });
+      const headers = {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+      };
+      const delRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_checkins?trait_id=eq.${encodeURIComponent(traitId)}&logged_at=eq.${encodeURIComponent(date)}`, { method: "DELETE", headers });
+      if (!delRes.ok) throw new Error(`Supabase-Fehler (${delRes.status}): ${await delRes.text()}`);
+      if (answer === true || answer === false) {
+        const insRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/personality_checkins`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ trait_id: traitId, logged_at: date, note: answer ? 1 : 0 }),
+        });
+        if (!insRes.ok) throw new Error(`Supabase-Fehler (${insRes.status}): ${await insRes.text()}`);
+      }
+      return res.status(200).json({ success: true });
+    }
+
     return res.status(400).json({ error: "Unbekannte Aktion" });
   } catch (err) {
     console.error("Fehler bei Dashboard-Aktion:", err);

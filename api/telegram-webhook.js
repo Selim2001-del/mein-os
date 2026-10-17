@@ -57,7 +57,7 @@ const handler = async (req, res) => {
         return res.status(200).send("OK");
       }
 
-      const hasNote = parseGermanNumber(transcript) !== null;
+      const hasNote = parseGermanNumber(transcript) !== null || parseYesNo(transcript) !== null;
       const hasSkip = /überspringen|skip|weiter|nächste/i.test(transcript);
       if (wordCount <= 6 && (hasNote || hasSkip)) {
         await handleCheckinAnswer(chatId, transcript, activeSession);
@@ -69,7 +69,8 @@ const handler = async (req, res) => {
     // 4. Will die Person einen Check-in STARTEN?
     const wantsCheckup = /check[\s-]?in|check[\s-]?up|kpis?\s*(von\s*)?(meiner?\s*)?(persönlichkeit\s*)?durchgehen|persönlichkeits[\s-]?kpis?|tageskontroll[\s-]?kpis?|tägliche[nr]?\s*(check|kpis?)|eigenschaften\s*durchgehen|charaktereigenschaften\s*durchgehen|flaws?\s*durchgehen/i.test(transcript);
     if (wantsCheckup) {
-      await startCheckinSession(chatId);
+      // Standard: nur die Fokuspunkte (Ja/Nein). "alle" = alle Eigenschaften mit Schulnote.
+      await startCheckinSession(chatId, { all: /\balle\b/i.test(transcript) });
       return res.status(200).send("OK");
     }
 
@@ -164,7 +165,8 @@ const handler = async (req, res) => {
             note: action.note,
             notes: action.notes || null,
           });
-          results.push(`✅ Check-in "${action.trait_name}": Note ${action.note}`);
+          const isFocusYesNo = /^(eine sache|drang aushalten|zeit für mich)$/i.test(String(action.trait_name || "").trim());
+          results.push(`✅ Check-in "${action.trait_name}": ${isFocusYesNo ? (action.note ? "Ja" : "Nein") : "Note " + action.note}`);
         } else if (action.type === "generate_plan") {
           const planText = await generateTrainingPlan(action.constraints);
           await deactivateOldPlans();
@@ -444,6 +446,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 3. "trait_checkin" - die Person bewertet eine Charaktereigenschaft mit einer Schulnote (1=sehr gut, 6=ungenügend):
    Format: {"type":"trait_checkin","trait_name":"...","note":1-6,"notes":"optionaler Kontext"}
+   AUSNAHME Fokuspunkte (Ja/Nein statt Note): "Eine Sache", "Drang aushalten", "Zeit für mich". Sagt die Person dazu Ja/geschafft -> note 1, Nein/nicht geschafft -> note 0 (z.B. "Eine Sache ja, Zeit für mich nein").
 
 4. "generate_plan" - die Person bittet ausdrücklich darum, einen NEUEN Trainingsplan zu ERSTELLEN oder einen bestehenden fundamental zu ÄNDERN/ANPASSEN (Wörter wie "erstell mir einen neuen Trainingsplan", "mach den Plan neu", "pass meinen Plan an, mehr Fokus auf Beine"). Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
    Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
@@ -609,6 +612,9 @@ async function getTraitById(id) {
 }
 
 function formatTraitQuestion(trait, position, total) {
+  if (trait.answer_type === "yes_no") {
+    return `(${position}/${total}) ${trait.name}\n${trait.question || trait.new_behavior || ""}\n\nJa oder Nein?`;
+  }
   let msg = `(${position}/${total}) ${trait.name}`;
   if (trait.old_pattern) msg += `\nAltes Muster: ${trait.old_pattern}`;
   if (trait.new_behavior) msg += `\nNeues Verhalten: ${trait.new_behavior}`;
@@ -616,15 +622,20 @@ function formatTraitQuestion(trait, position, total) {
   return msg;
 }
 
-async function startCheckinSession(chatId) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/personality_traits?active=eq.true&select=id`;
+async function startCheckinSession(chatId, opts = {}) {
+  const url = `${process.env.SUPABASE_URL}/rest/v1/personality_traits?active=eq.true&select=id,focus,answer_type,name&order=name.asc`;
   const res = await fetch(url, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
     },
   });
-  const traits = await res.json();
+  const allTraits = await res.json();
+  // Fokus-Modus: nur die aktuellen Fokuspunkte abfragen; mit "alle" die Leitbild-Eigenschaften (Schulnote)
+  const focusTraits = (allTraits || []).filter((t) => t.focus);
+  const traits = opts.all || focusTraits.length === 0
+    ? (allTraits || []).filter((t) => t.answer_type !== "yes_no")
+    : focusTraits;
 
   if (!traits || traits.length === 0) {
     await sendTelegramMessage(chatId, "Du hast noch keine Charaktereigenschaften angelegt. Sag mir erstmal welche, z.B. \"Neue Eigenschaft: Prokrastination, ist ein Flaw\".");
@@ -655,7 +666,15 @@ async function startCheckinSession(chatId) {
 
   const firstTrait = await getTraitById(traitIds[0]);
   const skippedNote = answeredIds.size > 0 ? ` (${answeredIds.size} heute schon erledigt, übersprungen)` : "";
-  await sendTelegramMessage(chatId, `Los geht's, ${remainingTraits.length} Eigenschaften${skippedNote}:\n\n${formatTraitQuestion(firstTrait, 1, remainingTraits.length)}`);
+  const label = traits === focusTraits ? "Fokuspunkte" : "Eigenschaften";
+  await sendTelegramMessage(chatId, `Los geht's, ${remainingTraits.length} ${label}${skippedNote}:\n\n${formatTraitQuestion(firstTrait, 1, remainingTraits.length)}`);
+}
+
+function parseYesNo(text) {
+  const t = text.trim().toLowerCase();
+  if (/^(nein|nö|noe|ne|nee|nope|leider nicht|nicht wirklich|eher nicht)\b/.test(t)) return false;
+  if (/^(ja|jap|jup|jep|joa|jo|klar|yes|genau|hab ich|habe ich|safe)\b/.test(t)) return true;
+  return null;
 }
 
 function parseGermanNumber(text) {
@@ -672,14 +691,26 @@ function parseGermanNumber(text) {
 
 async function handleCheckinAnswer(chatId, transcript, session) {
   const wantsSkip = /überspringen|skip|weiter|nächste/i.test(transcript);
-  const note = parseGermanNumber(transcript);
+  const currentTraitId = session.trait_ids[session.current_index];
+  const currentTrait = await getTraitById(currentTraitId);
+  const isYesNo = currentTrait && currentTrait.answer_type === "yes_no";
+
+  // Ja/Nein-Fokuspunkte: Ja = 1, Nein = 0
+  let note;
+  if (isYesNo) {
+    const yn = parseYesNo(transcript);
+    note = yn === null ? null : yn ? 1 : 0;
+  } else {
+    note = parseGermanNumber(transcript);
+  }
 
   if (note === null && !wantsSkip) {
-    await sendTelegramMessage(chatId, "Ich konnte keine Note (1-6) erkennen, sag's nochmal bitte, oder sag \"überspringen\" 🙂");
+    await sendTelegramMessage(chatId, isYesNo
+      ? "Ja oder Nein? Oder sag \"überspringen\" 🙂"
+      : "Ich konnte keine Note (1-6) erkennen, sag's nochmal bitte, oder sag \"überspringen\" 🙂");
     return;
   }
 
-  const currentTraitId = session.trait_ids[session.current_index];
   if (!wantsSkip) {
     await saveToSupabase("personality_checkins", { trait_id: currentTraitId, note });
   }
@@ -1107,7 +1138,7 @@ async function handleDelete(table, description) {
 
   if (table === "personality_checkins") {
     // Sonderfall: Kein eigener Text, also Trait-Name + Note + Datum zu einem Anzeigetext kombinieren
-    const url = `${process.env.SUPABASE_URL}/rest/v1/personality_checkins?select=id,note,logged_at,personality_traits(name)&order=logged_at.desc&limit=100`;
+    const url = `${process.env.SUPABASE_URL}/rest/v1/personality_checkins?select=id,note,logged_at,personality_traits(name,answer_type)&order=logged_at.desc&limit=100`;
     const res = await fetch(url, {
       headers: {
         apikey: process.env.SUPABASE_SECRET_KEY,
@@ -1118,7 +1149,7 @@ async function handleDelete(table, description) {
     const raw = await res.json();
     rows = raw.map((r) => ({
       id: r.id,
-      display: `${r.personality_traits ? r.personality_traits.name : "?"} - Note ${r.note} (${r.logged_at})`,
+      display: `${r.personality_traits ? r.personality_traits.name : "?"} - ${r.personality_traits && r.personality_traits.answer_type === "yes_no" ? (r.note ? "Ja" : "Nein") : "Note " + r.note} (${r.logged_at})`,
     }));
     column = "display";
   } else {
