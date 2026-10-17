@@ -98,8 +98,8 @@ const handler = async (req, res) => {
       try {
         if (action.type === "insert") {
           if (action.table === "debts") {
-            await upsertDebt(action.data);
-            results.push(`✅ Schuld gespeichert${action.data && action.data.name ? `: ${action.data.name}` : ""}`);
+            const debtInfo = await upsertDebt(action.data);
+            results.push(`✅ Schuld gespeichert${debtInfo && debtInfo.name ? `: ${debtInfo.name}` : action.data && action.data.name ? `: ${action.data.name}` : ""}${debtInfo && debtInfo.updated ? " (bestehender Eintrag aktualisiert)" : ""}`);
             continue;
           }
           if (action.table === "expense_budgets") {
@@ -197,7 +197,7 @@ const handler = async (req, res) => {
           const updateResult = await handleUpdateNutrition(action.description, action.calories_delta, action.protein_delta);
           results.push(`✏️ ${updateResult}`);
         } else if (action.type === "update_debt") {
-          const debtResult = await handleUpdateDebt(action.description, action.paid_off_completely, action.paid_amount);
+          const debtResult = await handleUpdateDebt(action.description, action.paid_off_completely, action.paid_amount, action.set_restbetrag);
           results.push(`💰 ${debtResult}`);
         } else if (action.type === "merge_tasks") {
           const mergeResult = await handleMergeTasks(action.description, action.combined_title);
@@ -516,6 +516,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 10. "update_debt" - die Person hat eine BESTEHENDE Schuld (teilweise oder vollständig) ABBEZAHLT, z.B. "GKV ist jetzt komplett abbezahlt", "ich hab 100 Euro auf die Rentenversicherung abbezahlt", "Metahan ist beglichen":
     Format: {"type":"update_debt","description":"welche Schuld","paid_off_completely":true} ODER {"type":"update_debt","description":"welche Schuld","paid_amount":100}
     NIEMALS als normales "insert" in debts behandeln, wenn es um eine bereits bestehende Schuld geht, die abbezahlt wurde - das würde eine neue/doppelte Schuld anlegen statt die bestehende zu reduzieren.
+    KORREKTUR: Sagt die Person, dass ein Betrag falsch ist oder eine Zahlung nicht stimmt ("das war nur zum Testen", "korrigier das, ich hab noch 700 offen", "stimmt nicht, es sind noch 700"), nutze {"type":"update_debt","description":"welche Schuld","set_restbetrag":700} mit dem NEUEN Restbetrag. Weiß die Person nur, dass eine Zahlung rückgängig soll ("die 100 Euro waren nur ein Test"), rechne den Restbetrag aus dem vorherigen Stand zurück (bisheriger Rest + diese Zahlung). NIEMALS dafür eine neue Schuld anlegen.
 
 11. "merge_tasks" - die Person möchte mehrere bestehende Aufgaben zu EINER zusammenfassen, z.B. "nimm die letzten drei Aufgaben und mach eine draus", "fass X, Y und Z zu einer Aufgabe zusammen":
     Format: {"type":"merge_tasks","description":"welche Aufgaben zusammengeführt werden sollen, in normalen Worten","combined_title":"neuer, zusammengefasster Aufgaben-Titel"}
@@ -840,15 +841,41 @@ async function upsertExpenseBudget(data) {
   }
 }
 
+// Namen vergleichbar machen: klein, nur Buchstaben/Ziffern, doppelte Buchstaben zusammenziehen
+function normalizeDebtName(n) {
+  return String(n || "").toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss").replace(/[^a-z0-9]/g, "").replace(/(.)\1+/g, "$1");
+}
+function levenshtein(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+function findSimilarDebt(rows, name) {
+  const target = normalizeDebtName(name);
+  if (!target) return null;
+  let best = null, bestDist = Infinity;
+  for (const r of rows) {
+    const n = normalizeDebtName(r.name);
+    if (n === target || (n.length >= 4 && target.length >= 4 && (n.includes(target) || target.includes(n)))) return r;
+    const dist = levenshtein(n, target);
+    if (dist < bestDist) { bestDist = dist; best = r; }
+  }
+  const limit = target.length <= 4 ? 1 : 2;
+  return bestDist <= limit ? best : null;
+}
+
 async function upsertDebt(data) {
-  const url = `${process.env.SUPABASE_URL}/rest/v1/debts?name=ilike.${encodeURIComponent(data.name)}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${process.env.SUPABASE_URL}/rest/v1/debts?select=*`, {
     headers: {
       apikey: process.env.SUPABASE_SECRET_KEY,
       Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
     },
   });
-  const existing = await res.json();
+  const allDebts = res.ok ? await res.json() : [];
+  const similar = findSimilarDebt(allDebts, data.name);
+  const existing = similar ? [similar] : [];
 
   if (existing && existing.length > 0) {
     // Schon vorhanden -> nur Rest-Betrag/Rate/Zins aktualisieren, Ausgangspunkt bleibt unangetastet
@@ -869,9 +896,11 @@ async function upsertDebt(data) {
       }
     );
     if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren der Schuld (${patchRes.status}): ${await patchRes.text()}`);
+    return { name: existing[0].name, updated: true };
   } else {
     // Neu -> Ausgangspunkt automatisch auf den aktuellen Rest-Betrag setzen
     await saveToSupabase("debts", { ...data, original_betrag: data.restbetrag });
+    return { name: data.name, updated: false };
   }
 }
 
@@ -881,7 +910,7 @@ async function upsertDebt(data) {
 
 // ---------- Schuld als (teilweise) abbezahlt markieren ----------
 
-async function handleUpdateDebt(description, paidOffCompletely, paidAmount) {
+async function handleUpdateDebt(description, paidOffCompletely, paidAmount, setRestbetrag) {
   const url = `${process.env.SUPABASE_URL}/rest/v1/debts?select=id,name,restbetrag,original_betrag`;
   const res = await fetch(url, {
     headers: {
@@ -899,7 +928,7 @@ async function handleUpdateDebt(description, paidOffCompletely, paidAmount) {
   const matchPrompt = `Hier ist eine Liste bestehender Schulden (id + Name):
 ${JSON.stringify(rows)}
 
-Die Person hat eine davon abbezahlt, beschrieben als: "${description}"
+Die Person meint eine davon (Abzahlung oder Korrektur), beschrieben als: "${description}". Namen können unterschiedlich geschrieben sein (z.B. "Metahan" = "Mettehan").
 
 Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne Markdown: {"id": "die-id-oder-null", "matched_name": "der Name der gefundenen Schuld oder null", "reason": "kurze Begründung"}`;
 
@@ -911,7 +940,11 @@ Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne
   }
 
   const row = rows.find((r) => r.id === match.id);
-  const newRestbetrag = paidOffCompletely ? 0 : Math.max(0, (row.restbetrag || 0) - (paidAmount || 0));
+  if (!row) return `Nichts eindeutig gefunden zu "${description}".`;
+  const isCorrection = setRestbetrag != null && !isNaN(Number(setRestbetrag));
+  const newRestbetrag = isCorrection
+    ? Math.max(0, Number(setRestbetrag))
+    : paidOffCompletely ? 0 : Math.max(0, (row.restbetrag || 0) - (paidAmount || 0));
 
   const patchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/debts?id=eq.${match.id}`, {
     method: "PATCH",
@@ -924,6 +957,7 @@ Finde den EINEN am besten passenden Eintrag. Antworte NUR mit validem JSON, ohne
   });
   if (!patchRes.ok) throw new Error(`Supabase-Fehler beim Aktualisieren (${patchRes.status}): ${await patchRes.text()}`);
 
+  if (isCorrection) return `"${row.name}" korrigiert: ${newRestbetrag}€ offen (vorher ${row.restbetrag}€)`;
   return newRestbetrag === 0
     ? `"${match.matched_name}" ist jetzt komplett abbezahlt! 🎉`
     : `"${match.matched_name}": noch ${newRestbetrag}€ offen (vorher ${row.restbetrag}€)`;
