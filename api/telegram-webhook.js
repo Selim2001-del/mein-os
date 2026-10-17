@@ -173,7 +173,7 @@ const handler = async (req, res) => {
             note: action.note,
             notes: action.notes || null,
           });
-          const isFocusYesNo = /^(eine sache|drang aushalten|zeit für mich)$/i.test(String(action.trait_name || "").trim());
+          const isFocusYesNo = /^(eine sache|drang aushalten|zeit für mich|handy erst nach der arbeit)$/i.test(String(action.trait_name || "").trim());
           results.push(`✅ Check-in "${action.trait_name}": ${isFocusYesNo ? (action.note ? "Ja" : "Nein") : "Note " + action.note}`);
         } else if (action.type === "generate_plan") {
           const planText = await generateTrainingPlan(action.constraints);
@@ -484,7 +484,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 3. "trait_checkin" - die Person bewertet eine Charaktereigenschaft mit einer Schulnote (1=sehr gut, 6=ungenügend):
    Format: {"type":"trait_checkin","trait_name":"...","note":1-6,"notes":"optionaler Kontext"}
-   AUSNAHME Fokuspunkte (Ja/Nein statt Note): "Eine Sache", "Drang aushalten", "Zeit für mich". Sagt die Person dazu Ja/geschafft -> note 1, Nein/nicht geschafft -> note 0 (z.B. "Eine Sache ja, Zeit für mich nein").
+   AUSNAHME Fokuspunkte (Ja/Nein statt Note): "Eine Sache", "Drang aushalten", "Zeit für mich", "Handy erst nach der Arbeit" (auch gemeint bei "handyfrei", "kein Handy bei der Arbeit"). Sagt die Person dazu Ja/geschafft -> note 1, Nein/nicht geschafft -> note 0 (z.B. "Eine Sache ja, Zeit für mich nein").
 
 4. "generate_plan" - die Person bittet ausdrücklich darum, einen NEUEN Trainingsplan zu ERSTELLEN oder einen bestehenden fundamental zu ÄNDERN/ANPASSEN (Wörter wie "erstell mir einen neuen Trainingsplan", "mach den Plan neu", "pass meinen Plan an, mehr Fokus auf Beine"). Falls sie dabei einen konkreten Wunsch nennt (z.B. "nur 4 Tage die Woche", "mehr Fokus auf Beine"), diesen unter "constraints" mitgeben:
    Format: {"type":"generate_plan","constraints":"z.B. 4 Trainingstage pro Woche"}
