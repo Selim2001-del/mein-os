@@ -843,6 +843,14 @@
         <div id="weekTrackerBox"></div>
       </div>
 
+      <div class="panel g-12">
+        <div class="collapsible-header" style="cursor:default; margin-bottom:12px;">
+          <h2 style="margin:0">Band</h2>
+          <span class="muted" id="bandSyncLabel"></span>
+        </div>
+        <div id="bandBox"></div>
+      </div>
+
       <div class="panel g-6">
         <h2>Trainingsziele</h2>
         <div id="trainingGoalsBox"></div>
@@ -1494,6 +1502,32 @@ function changeTrainingWeek(delta) {
   renderWeekTracker(lastTrainingData.workouts, lastTrainingData.trainingDays, lastTrainingData.steps);
 }
 
+// ---- Band: Tageswerte vom Fitness-Band (über Apple Health) ----
+function renderBand(rows) {
+  const box = document.getElementById("bandBox");
+  const label = document.getElementById("bandSyncLabel");
+  if (!box) return;
+  if (!rows.length) {
+    box.innerHTML = `<span class="muted">Noch keine Band-Daten. Sobald der Kurzbefehl auf dem iPhone läuft, erscheinen hier Schritte, Schlaf und Puls.</span>`;
+    if (label) label.textContent = "";
+    return;
+  }
+  const sorted = [...rows].sort((a, b) => (a.logged_at < b.logged_at ? 1 : -1));
+  const last = sorted[0];
+  const week = sorted.slice(0, 7);
+  const avg = (k) => { const v = week.map((r) => r[k]).filter((x) => x != null).map(Number); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+  const fmt = (v, dec = 0) => v == null ? "–" : Number(v).toLocaleString("de-DE", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+  const isToday = last.logged_at === todayDateStr();
+  if (label) label.textContent = (isToday ? "Heute" : new Date(last.logged_at + "T12:00:00Z").toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })) + (last.updated_at ? " · " + new Date(last.updated_at).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" }) : "");
+  const tiles = [
+    ["Schritte", fmt(last.steps), "Ø 7 Tage " + fmt(avg("steps"))],
+    ["Schlaf", last.sleep_hours != null ? fmt(last.sleep_hours, 1) + " h" : "–", "Ø " + (avg("sleep_hours") != null ? fmt(avg("sleep_hours"), 1) + " h" : "–")],
+    ["Ruhepuls", last.resting_hr != null ? fmt(last.resting_hr) + " bpm" : "–", "Ø " + (avg("resting_hr") != null ? fmt(avg("resting_hr")) + " bpm" : "–")],
+    ["Aktiv", last.active_kcal != null ? fmt(last.active_kcal) + " kcal" : "–", "Ø " + (avg("active_kcal") != null ? fmt(avg("active_kcal")) + " kcal" : "–")],
+  ];
+  box.innerHTML = `<div style="display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px">${tiles.map((t) => `<div style="border:1px solid var(--border); border-radius:12px; padding:12px 12px 10px"><div class="hud-k">${t[0]}</div><div style="font-size:22px; font-weight:200; line-height:1.25; margin-top:2px">${t[1]}</div><div class="muted" style="font-size:11px">${t[2]}</div></div>`).join("")}</div>`;
+}
+
 function renderWeekTracker(weeklyWorkouts, trainingDaysRaw, weeklySteps) {
   lastTrainingData = { workouts: weeklyWorkouts, trainingDays: trainingDaysRaw, steps: weeklySteps };
   const box = document.getElementById("weekTrackerBox");
@@ -1642,6 +1676,7 @@ function render(data) {
     : `<span class="muted">Kein Trainingsziel hinterlegt</span>`;
 
   renderWeekTracker(data.weeklyWorkouts || [], data.trainingDays || [], data.weeklySteps || []);
+  renderBand(data.healthDaily || []);
   renderSales(data.salesKpis || [], data.salesGoals);
   renderCockpit(data);
   renderFitHud(data);

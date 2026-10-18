@@ -492,7 +492,7 @@ Zerlege die Notiz in einzelne Aktionen. Jede Aktion hat ein "type"-Feld:
 
 5. "question" - die Person stellt eine Frage zu ihren bisherigen Daten. Das umfasst auch OFFENE, GEFÜHLSBASIERTE Fragen wie "ich hab das Gefühl, ich mache keinen Progress", "läuft's finanziell besser?", "wie geht's mir eigentlich gerade" - bei solchen Fragen mehrere relevante Tabellen gleichzeitig auswählen (nicht nur eine), damit eine fundierte, ehrliche Antwort anhand der echten Daten möglich ist (z.B. bei "kein Progress"-Gefühl: body_metrics + workouts + training_goals; bei "finanziell besser"-Gefühl: debts + expenses + income + finance_snapshots + finance_goals):
    Format: {"type":"question","text":"die Frage","relevant_tables":["expenses","debts"]}
-   Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung. Bis zu 5 Tabellen gleichzeitig sind erlaubt, wenn die Frage das braucht.
+   Zusätzlich zu den Tabellen oben stehen für relevant_tables auch "health_daily" (Tageswerte vom Fitness-Band: Schritte, aktive kcal, Ruhepuls, Schlaf - nimm sie bei Fragen zu Schlaf, Puls, Aktivität, Erholung oder Fortschritt dazu), "training_plan" (aktueller Trainingsplan als Text), "personality_traits" und "personality_checkins" (Charaktereigenschaften-Verlauf) zur Verfügung. Bis zu 5 Tabellen gleichzeitig sind erlaubt, wenn die Frage das braucht.
    Außerdem stehen zur Verfügung: "life_profile" (Lebensgeschichte, Familie, Prägungen, Selbstbild der Person), "gehirn_seiten" (ihr zweites Gehirn: persönliche Wiki-Seiten über sie selbst plus Wissensseiten zu Psychologie, Narzissmus, Beziehungen, Manipulation, Trauma) und "journal_entries". Bei PERSÖNLICHEN REFLEXIONSFRAGEN (z.B. "warum reagiere ich so", "was sagt das über mich", "erkenne ich bei mir Muster von X", "wie hängt das mit meiner Kindheit zusammen") nimm "life_profile" + "gehirn_seiten" + "journal_entries" (und "personality_checkins", wenn es um die Charaktereigenschaften geht).
    WISSENSFRAGEN und ERKLÄRBITTEN (z.B. "was ist verdeckter Narzissmus", "erklär mir Bindungsangst", "wie funktioniert Zinseszins", "was ist progressive Überlastung") sind ebenfalls "question": mit relevant_tables ["gehirn_seiten"], wenn es um Psychologie, Beziehungen oder Persönlichkeit geht, sonst mit leerem Array [].
    NACHFRAGEN, die sich auf die vorherige Antwort im Gespräch beziehen (z.B. "und was heißt das für mich?", "erklär das genauer", "gib mir ein Beispiel", "warum?", "und was mache ich dagegen?"), sind IMMER "question": text = die Nachricht wörtlich, relevant_tables wie bei einer Reflexionsfrage. Fragen und Nachfragen werden NIEMALS als journal_entries gespeichert.
@@ -2120,6 +2120,8 @@ async function answerQuestion(question, relevantTables) {
       rows = await fetchRecent("life_profile", 300, "&select=category,topic,title,content,interpretation");
     } else if (table === "journal_entries") {
       rows = await fetchRecent("journal_entries", 50, "&order=created_at.desc");
+    } else if (table === "health_daily") {
+      rows = await fetchRecent("health_daily", 30, "&order=logged_at.desc");
     } else {
       const filter = table === "training_plan" ? "&active=eq.true" : "";
       rows = await fetchRecent(table, 50, filter);

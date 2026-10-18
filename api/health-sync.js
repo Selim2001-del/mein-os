@@ -1,0 +1,91 @@
+// Empfängt Tageswerte vom Fitness-Band (Xiaomi Smart Band -> Mi Fitness -> Apple Health -> iOS-Kurzbefehl).
+// Der Kurzbefehl schickt einmal am Abend (oder beliebig oft) ein JSON wie:
+//   { "password": "...", "steps": 8432, "active_kcal": 512, "resting_hr": 61, "sleep_hours": 7.2 }
+// Ein Eintrag pro Tag, späterer Sync überschreibt den früheren. Felder sind alle optional.
+
+module.exports = async (req, res) => {
+  if (req.method === "GET") return res.status(200).json({ ok: true, hint: "POST mit JSON senden" });
+  if (req.method !== "POST") return res.status(405).json({ error: "Nur POST erlaubt" });
+
+  let body = req.body || {};
+  if (typeof body === "string") {
+    try { body = JSON.parse(body); } catch (e) { body = {}; }
+  }
+
+  const password = body.password || req.headers["x-password"];
+  if (!password || String(password).trim() !== process.env.DASHBOARD_PASSWORD) {
+    return res.status(401).json({ error: "Falsches Passwort" });
+  }
+
+  try {
+    const date = parseDate(body.date) || berlinToday();
+    const row = { logged_at: date, updated_at: new Date().toISOString(), source: "apple_health" };
+
+    const steps = parseNum(body.steps);
+    const activeKcal = parseNum(body.active_kcal ?? body.kcal ?? body.calories);
+    const restingHr = parseNum(body.resting_hr ?? body.ruhepuls);
+    const avgHr = parseNum(body.avg_hr ?? body.puls);
+    let sleep = parseNum(body.sleep_hours ?? body.schlaf);
+    const sleepMin = parseNum(body.sleep_minutes);
+    if (sleep == null && sleepMin != null) sleep = sleepMin / 60;
+    if (sleep != null && sleep > 24) sleep = sleep / 60; // Minuten statt Stunden geschickt
+    const distance = parseNum(body.distance_km ?? body.distanz);
+
+    if (steps != null) row.steps = Math.round(steps);
+    if (activeKcal != null) row.active_kcal = Math.round(activeKcal);
+    if (restingHr != null) row.resting_hr = Math.round(restingHr);
+    if (avgHr != null) row.avg_hr = Math.round(avgHr);
+    if (sleep != null) row.sleep_hours = Math.round(sleep * 10) / 10;
+    if (distance != null) row.distance_km = Math.round(distance * 100) / 100;
+
+    const saveRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/health_daily?on_conflict=logged_at`, {
+      method: "POST",
+      headers: {
+        apikey: process.env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(row),
+    });
+    if (!saveRes.ok) throw new Error(`Supabase-Fehler (${saveRes.status}): ${await saveRes.text()}`);
+    const saved = (await saveRes.json())[0] || row;
+
+    const parts = [];
+    if (saved.steps != null) parts.push(`${Number(saved.steps).toLocaleString("de-DE")} Schritte`);
+    if (saved.active_kcal != null) parts.push(`${saved.active_kcal} kcal aktiv`);
+    if (saved.resting_hr != null) parts.push(`Ruhepuls ${saved.resting_hr}`);
+    if (saved.sleep_hours != null) parts.push(`${String(saved.sleep_hours).replace(".", ",")} h Schlaf`);
+    return res.status(200).json({ ok: true, message: `Operator: ${parts.join(" · ") || "gespeichert"}`, saved });
+  } catch (err) {
+    console.error("Fehler beim Health-Sync:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// Zahlen aus Kurzbefehlen kommen evtl. als Text mit deutschem Format ("8.432", "7,5", "61 BPM")
+function parseNum(v) {
+  if (v == null || v === "") return null;
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  let s = String(v).trim().replace(/[^\d.,-]/g, "");
+  if (!s) return null;
+  if (/^\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) s = s.replace(/\./g, "").replace(",", ".");
+  else if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) s = s.replace(/,/g, "");
+  else s = s.replace(",", ".");
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+
+function parseDate(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  let m = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+  if (m) return `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+
+function berlinToday() {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "Europe/Berlin" });
+}

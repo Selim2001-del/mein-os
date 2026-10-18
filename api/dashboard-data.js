@@ -39,6 +39,7 @@ module.exports = async (req, res) => {
       weeklySteps,
       salesKpis,
       salesGoals,
+      healthDaily,
     ] = await Promise.all([
       sb("tasks?done=eq.false&order=created_at.desc&limit=50"),
       sb("tasks?done=eq.true&select=id&limit=500"),
@@ -63,7 +64,14 @@ module.exports = async (req, res) => {
       sb(`daily_steps?logged_at=gte.${daysAgoIso(90)}`),
       sb(`sales_kpis?logged_at=gte.${daysAgoIso(120)}`),
       sb("sales_goals?order=updated_at.desc&limit=1"),
+      sb(`health_daily?logged_at=gte.${daysAgoIso(90)}&order=logged_at.desc`),
     ]);
+
+    // Schritte: Band-Wert (Apple Health) gewinnt, falls höher als manuell eingetragene Schritte
+    const stepsByDate = {};
+    for (const s of weeklySteps) stepsByDate[s.logged_at] = (stepsByDate[s.logged_at] || 0) + (s.steps || 0);
+    for (const h of healthDaily || []) if (h.steps != null) stepsByDate[h.logged_at] = Math.max(stepsByDate[h.logged_at] || 0, h.steps);
+    const mergedSteps = Object.entries(stepsByDate).map(([logged_at, steps]) => ({ logged_at, steps }));
 
     // Lohn, der ab dem 25. eines Monats eingeht, zählt für den Folgemonat.
     const SALARY_ROLLOVER_DAY = 25;
@@ -125,7 +133,8 @@ module.exports = async (req, res) => {
       expenseBudgets,
       weeklyWorkouts,
       trainingDays,
-      weeklySteps,
+      weeklySteps: mergedSteps,
+      healthDaily: healthDaily || [],
       salesKpis,
       salesGoals: salesGoals[0] || null,
     });
